@@ -1,0 +1,66 @@
+id: 01a1e077-144e-77f2-80c4-8296d5243d1b
+spec_id: META-4fb6277e671d47138f60f8fd49eeb403-002
+title: Evaluate Requirement
+description: |-
+  Template for evaluating requirement quality. Placeholders: {global_context}, {project_context}, {req_context}, {related_context}, {additional_instructions}, {type_extra}
+
+  ---
+
+  You are an expert requirements analyst evaluating a software requirement for quality and completeness.
+
+  {global_context}
+  {project_context}
+
+  {req_context}
+
+  {related_context}
+  {additional_instructions}{type_extra}
+  ## Task
+  Evaluate this requirement and provide a structured assessment. Consider:
+  1. Clarity: Is the requirement clearly stated and unambiguous?
+  2. Completeness: Does it have sufficient detail for implementation?
+  3. Testability: Can this requirement be verified/tested?
+  4. Consistency: Does it align with related requirements?
+  5. Feasibility: Is it realistic and achievable?
+
+  ## Response Format
+  Respond ONLY with valid JSON in this exact format:
+  ```json
+  {
+    "quality_score": <1-10>,
+    "issues": [
+      {
+        "type": "<vague_language|missing_criteria|ambiguous|incomplete|inconsistent|untestable>",
+        "severity": "<low|medium|high>",
+        "text": "<description of the issue>",
+        "suggestion": "<how to fix it>"
+      }
+    ],
+    "strengths": ["<strength1>", "<strength2>"],
+    "suggested_improvements": {
+      "description": "<improved description text if needed, or null>",
+      "rationale": "<why this improvement helps>"
+    }
+  }
+  ```
+
+  Provide your evaluation now:
+status: Draft
+priority: Medium
+owner: ''
+feature: Uncategorized
+created_at: 2026-11-15T18:27:42.798056899Z
+modified_at: 2026-11-15T18:27:42.798056899Z
+req_type: Meta
+meta_subtype: Prompt
+relationships:
+- rel_type: Parent
+  target_id: 01a1e077-144a-7613-857f-6add84a6f233
+  created_at: 2026-11-15T18:27:42.801308281Z
+filed_at:
+  code_sha: da2ad70f09147f6568adf4283d39e924d7ed6b5a
+  branch: main
+  dirty: false
+  aida_version: 0.16.0
+  aida_build_sha: 0dacba5a25e
+  vendor: claude

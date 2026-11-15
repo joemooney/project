@@ -1,0 +1,25 @@
+id: 01a1e077-146d-7b53-8282-b0076227c66f
+spec_id: META-4fb6277e671d47138f60f8fd49eeb403-012
+title: doc protocol
+description: |-
+  Purpose: keep the durable documentation true and useful.
+  Deliverable: the named documentation update.
+  Before done: examples and links are verified against current behavior.
+  Reviewer: checks audience fit, accuracy, discoverability, and drift risk.
+  Human boundary: policy claims require their accountable owner.
+status: Draft
+priority: Medium
+owner: ''
+feature: Uncategorized
+created_at: 2026-11-15T18:27:42.829542321Z
+modified_at: 2026-11-15T18:27:42.829542321Z
+req_type: Meta
+tags:
+- protocol:doc
+filed_at:
+  code_sha: da2ad70f09147f6568adf4283d39e924d7ed6b5a
+  branch: main
+  dirty: false
+  aida_version: 0.16.0
+  aida_build_sha: 0dacba5a25e
+  vendor: claude

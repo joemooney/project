@@ -1,0 +1,22 @@
+id: 01a1e077-147a-7f53-999d-df052b2d11da
+spec_id: META-4fb6277e671d47138f60f8fd49eeb403-016
+title: keystone lane protocol
+description: |-
+  Keep consequential architecture, security, and policy forks explicit.
+  Record the sketch and obtain the required advisor/operator sign-off before shipping.
+status: Draft
+priority: Medium
+owner: ''
+feature: Uncategorized
+created_at: 2026-11-15T18:27:42.842091822Z
+modified_at: 2026-11-15T18:27:42.842091822Z
+req_type: Meta
+tags:
+- protocol:lane:keystone
+filed_at:
+  code_sha: da2ad70f09147f6568adf4283d39e924d7ed6b5a
+  branch: main
+  dirty: false
+  aida_version: 0.16.0
+  aida_build_sha: 0dacba5a25e
+  vendor: claude

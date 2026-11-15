@@ -1,0 +1,66 @@
+id: 01a1e077-1454-7953-bb62-8328e9d955cc
+spec_id: META-4fb6277e671d47138f60f8fd49eeb403-004
+title: Suggest Relationships
+description: |-
+  Template for suggesting missing relationships. Placeholders: {global_context}, {project_context}, {req_context}, {all_reqs}, {rel_types}, {additional_instructions}
+
+  ---
+
+  You are an expert requirements analyst identifying missing relationships between requirements.
+
+  {global_context}
+  {project_context}
+
+  {req_context}
+
+  {all_reqs}
+
+  ## Available Relationship Types
+  - {rel_types}
+  {additional_instructions}
+  ## Task
+  Analyze the current requirement and suggest relationships that should exist but don't:
+  1. Dependencies (what must be done first)
+  2. Parent/child relationships (decomposition)
+  3. Verification relationships (what tests/validates this)
+  4. References (related but not dependent)
+
+  Only suggest relationships with confidence > 0.7 (70%).
+
+  ## Response Format
+  Respond ONLY with valid JSON in this exact format:
+  ```json
+  {
+    "suggested_relationships": [
+      {
+        "rel_type": "<relationship type>",
+        "target_spec_id": "<SPEC-ID of target requirement>",
+        "confidence": <0.0-1.0>,
+        "rationale": "<why this relationship should exist>"
+      }
+    ]
+  }
+  ```
+
+  If no relationships to suggest, return: {"suggested_relationships": []}
+
+  Provide your analysis now:
+status: Draft
+priority: Medium
+owner: ''
+feature: Uncategorized
+created_at: 2026-11-15T18:27:42.804454853Z
+modified_at: 2026-11-15T18:27:42.804454853Z
+req_type: Meta
+meta_subtype: Prompt
+relationships:
+- rel_type: Parent
+  target_id: 01a1e077-144a-7613-857f-6add84a6f233
+  created_at: 2026-11-15T18:27:42.807563824Z
+filed_at:
+  code_sha: da2ad70f09147f6568adf4283d39e924d7ed6b5a
+  branch: main
+  dirty: false
+  aida_version: 0.16.0
+  aida_build_sha: 0dacba5a25e
+  vendor: claude

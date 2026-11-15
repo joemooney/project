@@ -1,0 +1,25 @@
+id: 01a1e077-1467-7251-a746-b58eee645fa0
+spec_id: META-4fb6277e671d47138f60f8fd49eeb403-010
+title: task protocol
+description: |-
+  Purpose: complete the bounded technical or operational outcome.
+  Deliverable: the artifact or repository change named by the spec.
+  Before done: acceptance is satisfied and relevant checks pass.
+  Reviewer: checks completeness, focus, and unintended side effects.
+  Human boundary: expand scope only through a new or edited requirement.
+status: Draft
+priority: Medium
+owner: ''
+feature: Uncategorized
+created_at: 2026-11-15T18:27:42.823312445Z
+modified_at: 2026-11-15T18:27:42.823312445Z
+req_type: Meta
+tags:
+- protocol:task
+filed_at:
+  code_sha: da2ad70f09147f6568adf4283d39e924d7ed6b5a
+  branch: main
+  dirty: false
+  aida_version: 0.16.0
+  aida_build_sha: 0dacba5a25e
+  vendor: claude

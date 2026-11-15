@@ -1,0 +1,22 @@
+id: 01a1e077-1476-7f52-b76e-495000f5d37e
+spec_id: META-4fb6277e671d47138f60f8fd49eeb403-015
+title: docs lane protocol
+description: |-
+  Treat current behavior and checked examples as the source of truth.
+  Optimize for the named audience, discoverability, and resistance to drift.
+status: Draft
+priority: Medium
+owner: ''
+feature: Uncategorized
+created_at: 2026-11-15T18:27:42.838938160Z
+modified_at: 2026-11-15T18:27:42.838938160Z
+req_type: Meta
+tags:
+- protocol:lane:docs
+filed_at:
+  code_sha: da2ad70f09147f6568adf4283d39e924d7ed6b5a
+  branch: main
+  dirty: false
+  aida_version: 0.16.0
+  aida_build_sha: 0dacba5a25e
+  vendor: claude

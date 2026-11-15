@@ -1,0 +1,22 @@
+id: 01a1e077-1473-70e2-9f4b-48f0e1683aa6
+spec_id: META-4fb6277e671d47138f60f8fd49eeb403-014
+title: research lane protocol
+description: |-
+  Deliver evidence with source provenance and explicit uncertainty.
+  Do not turn findings into product or architecture decisions; surface those to the advisor.
+status: Draft
+priority: Medium
+owner: ''
+feature: Uncategorized
+created_at: 2026-11-15T18:27:42.835829691Z
+modified_at: 2026-11-15T18:27:42.835829691Z
+req_type: Meta
+tags:
+- protocol:lane:research
+filed_at:
+  code_sha: da2ad70f09147f6568adf4283d39e924d7ed6b5a
+  branch: main
+  dirty: false
+  aida_version: 0.16.0
+  aida_build_sha: 0dacba5a25e
+  vendor: claude

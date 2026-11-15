@@ -1,0 +1,35 @@
+id: 01a1e077-144a-7613-857f-6add84a6f233
+spec_id: META-4fb6277e671d47138f60f8fd49eeb403-001
+title: AI Prompts
+description: Default AI prompt templates. Edit these to customize how AI analyzes and improves requirements.
+status: Draft
+priority: Medium
+owner: ''
+feature: Uncategorized
+created_at: 2026-11-15T18:27:42.794800582Z
+modified_at: 2026-11-15T18:27:42.794800582Z
+req_type: Meta
+meta_subtype: Prompt
+relationships:
+- rel_type: Child
+  target_id: 01a1e077-144e-77f2-80c4-8296d5243d1b
+  created_at: 2026-11-15T18:27:42.801308281Z
+- rel_type: Child
+  target_id: 01a1e077-1451-7ae3-8bff-23b06e0e059e
+  created_at: 2026-11-15T18:27:42.804453247Z
+- rel_type: Child
+  target_id: 01a1e077-1454-7953-bb62-8328e9d955cc
+  created_at: 2026-11-15T18:27:42.807563824Z
+- rel_type: Child
+  target_id: 01a1e077-1457-7432-a20c-5599e5fc9b9a
+  created_at: 2026-11-15T18:27:42.810758252Z
+- rel_type: Child
+  target_id: 01a1e077-145a-7cc0-a57a-946e29846065
+  created_at: 2026-11-15T18:27:42.813906216Z
+filed_at:
+  code_sha: da2ad70f09147f6568adf4283d39e924d7ed6b5a
+  branch: main
+  dirty: false
+  aida_version: 0.16.0
+  aida_build_sha: 0dacba5a25e
+  vendor: claude

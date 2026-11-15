@@ -1,0 +1,25 @@
+id: 01a1e077-1470-7f72-bea5-3173623f094e
+spec_id: META-4fb6277e671d47138f60f8fd49eeb403-013
+title: faq protocol
+description: |-
+  Purpose: capture a frequently asked question and its verified answer.
+  Deliverable: a concise question and actionable answer.
+  Before done: the answer is verified against current behavior and indexed.
+  Reviewer: checks clarity, accuracy, and if the question is common enough.
+  Human boundary: none.
+status: Draft
+priority: Medium
+owner: ''
+feature: Uncategorized
+created_at: 2026-11-15T18:27:42.832705008Z
+modified_at: 2026-11-15T18:27:42.832705008Z
+req_type: Meta
+tags:
+- protocol:faq
+filed_at:
+  code_sha: da2ad70f09147f6568adf4283d39e924d7ed6b5a
+  branch: main
+  dirty: false
+  aida_version: 0.16.0
+  aida_build_sha: 0dacba5a25e
+  vendor: claude
