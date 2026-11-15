@@ -1,0 +1,6 @@
+job: cache-refresh-tick
+last_run: 2026-11-15T18:30:02.778770167Z
+last_by:
+  seat: substrate
+  vendor: tick
+result: ok
