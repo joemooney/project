@@ -1,0 +1,17 @@
+# Per-clone runtime state — must never be tracked on the orphan aida-store branch
+.aida/node.toml
+.aida/dispenser.toml
+.aida/*.lock
+.aida/cache.db
+.aida/cache.db-journal
+.aida/cache.db-shm
+.aida/cache.db-wal
+registry/*.lock
+
+# Atomic-write staging files (temp+rename) — never tracked
+objects/**/*.tmp.*
+registry/**/*.tmp.*
+schedule/**/*.tmp.*
+mailbox/**/*.tmp.*
+oplog.tmp.*
+metadata.tmp.*
