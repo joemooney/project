@@ -1,0 +1,502 @@
+---
+name: aida-orchestrate
+description: Drive the whole open spec list to merged as the operator's proxy — triage, sketch-gate, fan out implementers, fresh review per branch, batched integration, verified merge.
+disable-model-invocation: true
+allowed-tools:
+  - Bash
+  - Read
+  - Edit
+  - Write
+  - Grep
+  - Glob
+  - Agent
+  - SendMessage
+  - TaskStop
+  - PushNotification
+---
+<!-- AIDA Generated: v2.0.0 | checksum:69eb1425 | DO NOT EDIT DIRECTLY -->
+<!-- To customize: copy this file and modify the copy -->
+
+
+# AIDA Orchestrate Skill
+
+## Seat status contract
+
+Report one explicit state: **actively working**, **actively watching**,
+**delegated** (name lanes and recipients), **paused**, or **turn ended**. Cite
+current `aida ps` or `aida integrate` output for any ongoing-work claim; if
+there is no evidence, say it cannot be verified. After this turn ends, never
+say “still working,” “continuing,” or equivalent about yourself. Delegated
+work is not your own active work. See `.aida/discipline/advisor-role.md`.
+<!-- trace:TASK-1557 | ai:codex -->
+
+## Purpose
+
+Run the **orchestrator seat as the operator's proxy**, from start to finish.
+The objective is concrete: `aida list` becomes empty, with every item approved,
+implemented, reviewed and merged to the default branch. Items that genuinely
+need a human are reported, never faked, and deferring an item never counts as
+finishing it.
+
+You coordinate; you do not write the code. Specs are implemented by **separate
+sessions in their own worktrees**. Every branch is checked by a **reviewer that
+did not write it**. Approved branches land through **batched integration PRs**
+that are merged on the exact commit and then verified. Each routine decision
+the operator delegated to you is recorded on its spec as a `PROXY DECISION`
+comment, so the audit trail stays in the substrate.
+
+This skill composes existing surfaces rather than restating them:
+- `aida list/add/edit/comment/defer/questions`
+- `aida burndown plan` (the pickability gate)
+- `aida worktree add` (takes the lease)
+- `/aida-integrate` (the merge discipline)
+
+## When to use
+
+- The operator has **explicitly delegated decision authority** in their own
+  words ("make decisions on my behalf", "be my proxy"). They then ask to drive
+  the list to empty, work the backlog overnight, or set a `/goal` of "`aida list`
+  is empty".
+- Without that delegation, use `/aida-solo` or `/aida-triage` and ask.
+
+## Skip if
+
+- A warm interactive advisor/integrator loop with the operator in the room →
+  `/aida-solo`.
+- Fanning implementers out over the already-queued ready set, without triaging
+  or approving drafts yourself → `/aida-burndown`.
+- A headless, unattended `aida queue work --drain` from a `/goal` prompt →
+  `/aida-drain-queue`.
+- Only merging PRs that are already finished → `/aida-integrate`.
+- Watching someone else's drain → `/aida-oversee`.
+- One spec → `/aida-pickup`.
+
+## Required capabilities
+
+This skill needs four harness capabilities:
+- a subagent launcher (Claude Code: `Agent`), used for read-only research
+  only: implementers and reviewers run as separate processes you start from
+  Bash;
+- a way to message a running interactive lane (`aida mailbox send`);
+- Bash `run_in_background` jobs that notify when they exit;
+- a way to stop a stuck job (`TaskStop`).
+
+**Reviewers are never Agent-tool subagents.** Every review runs as a separate
+reviewer process that you start from Bash (step 5). This needs your seat to
+delegate the reviewer seat; the operator enters it once at a terminal:
+
+```bash
+aida role enter <seat> --delegate-seat reviewer --delegate-seat implementer
+```
+
+Without `--delegate-seat reviewer` the first reviewer launch fails closed.
+Report that to the operator; don't work around it.
+<!-- trace:STORY-1654 | ai:claude -->
+
+**Implementation and review must always run in separate sessions.** An
+implementer is only ever a separate process (step 4): a headless
+`aida queue work <SPEC> --role implementer --no-human`, or an interactive lane
+started inside `aida worktree add <SPEC> --role implementer`. Never an
+Agent-tool subagent. You can also route review to another seat.
+<!-- trace:STORY-1662 | ai:claude --> If no second session is available, stop at
+pushed branches and report. **Never review your own diff.**
+
+## The loop
+
+Repeat these steps until the list is empty or only human-gated items remain.
+
+### 1. Read the board
+
+```bash
+aida session handoff --seat orchestrator --show   # resuming? read IN FLIGHT first
+aida list --fields id,status,title
+aida burndown plan --status approved --json       # ready / supervised / serialize_held / parked
+aida awaiting
+aida ps
+```
+
+Put each open item in one bucket:
+
+| Bucket | Action |
+|---|---|
+| `draft` | Triage it (step 2). |
+| `awaiting_signoff` in `burndown plan` (approved, not yet queued) | Sign off by queueing it (step 2), or run the sketch gate first if it is architecture-class. |
+| `ready` in `burndown plan` | Dispatch an implementer (step 4), unless it is architecture-class and has no posted `ADVISOR SIGNOFF: APPROVED`. The sketch-gate row wins. |
+| Approved but architecture, authority, autonomy or store-integrity class | Sketch gate first (step 3). |
+| `supervised` / keystone | `/aida-guided-implement` with the operator, or report it. |
+| `serialize_held`, `parked`, unmet blocked-by, pending decision | Report it. Don't dispatch. |
+| `in-progress` | Check the handoff's IN FLIGHT list and `aida ps` **before** re-dispatching. Only an orphan with no live session is re-dispatched. |
+| Needs humans, a live run, or an operator decision | Report it. Never fake it. |
+| EPIC | A rollup; it closes when its children close. |
+
+### 2. Triage drafts as the proxy
+
+For each draft, decide, then record why with
+`aida comment add <ID> "PROXY DECISION (orchestrator for <operator>): ..."`:
+
+- **Concrete, testable, bounded** → `aida edit <ID> --status approved`, then
+  `aida queue add <ID>`. Queueing is the sign-off that makes it `ready`; record
+  both in the PROXY DECISION.
+- **Exact duplicate** → `aida edit <ID> --status rejected`, and name the
+  survivor in the comment.
+- **Architecture-class** → approve it and send it through step 3 (the sketch
+  gate). Queue it only after `ADVISOR SIGNOFF: APPROVED`. Never defer it just
+  to clear it.
+- **Needs something that hasn't happened yet** (real data over time, another
+  spec merging first) → use a typed trigger, e.g.
+  `aida defer <ID> --until "date:2026-12-01"` or `--until "spec:<SPEC-ID>=completed"`.
+  For human judgment, use `--until "manual:<who>" --reason "<why>"`
+  with product/advisor/operator authority. Free-text triggers are refused.
+- **Changes authority** (roles, grants, human-at-TTY floors, merge-hold,
+  unattended-run enablement, your own permissions) **or sets product direction**
+  → leave it as a draft. Record the fork with
+  `aida questions ask <ID> -q "<question>" -c "label|consequence|resolution" -c "..."`
+  so it appears in `aida human` and `aida awaiting`, and report it.
+
+If an approval is refused for lack of authority, don't work around it. Report
+it.
+
+### 3. Sketch gate (architecture-class specs)
+
+An architecture change needs a sketch on the owning spec plus **independent**
+advisor signoff before any code is written.
+
+1. An architect session writes the sketch as a spec comment that begins
+   `SKETCH (awaiting advisor signoff):`. It must cover:
+   - owner and trigger;
+   - surface;
+   - races and fail-closed behaviour;
+   - files, named by symbol;
+   - named tests;
+   - out-of-scope items;
+   - open questions.
+
+   No code at this stage. Then tell the advisor it is ready, as a request:
+   `aida mailbox send --to advisor --intent request --subject "<SPEC> sketch ready" "<summary>"`.
+   A request with no reply in its thread is a gate wait the lane-liveness
+   job reports after 15 minutes; an FYI mail is not tracked.
+   <!-- trace:STORY-1688 | ai:claude -->
+2. A **different** advisor session verifies the sketch's claims against the
+   code, answers the open questions, and posts either
+   `ADVISOR SIGNOFF: APPROVED` (with binding amendments) or
+   `CHANGES REQUESTED`. It also answers the sketch-ready request in its own
+   thread, `aida mailbox send --to <sender> --in-reply-to <request-id> "<verdict>"`;
+   the reply is what clears the lane-liveness advisor gate, and a spec
+   comment alone does not.
+   <!-- trace:STORY-1688 | ai:claude -->
+3. The spec is implemented **as amended**; the advisor's text wins. If the
+   advisor splits it into slices, build slice 1, file the rest as child tasks,
+   and tag the parent `closure:pending`.
+
+Advisors often find real bugs on main. File each one as its own spec, with
+`blocked-by` edges.
+
+### 4. Dispatch implementers (bounded parallel)
+
+Launch each implementer as a separate process from Bash, as a
+`run_in_background` job:
+
+```bash
+aida queue work <SPEC> --role implementer --no-human --vendor claude
+```
+
+It creates the worktree and implementer lease, runs a headless implementer
+with its own seat (a child grant if your grant delegates `implementer`,
+otherwise baseline; never your grant), waits, and prints one `implementer:`
+result line. Branch on the exit code: 0 PR opened (go to step 5), 31 no PR,
+32 punted, 33 held, 34 the concurrency cap refused the launch (nothing was
+set up). The implementer opens its own PR and stops; it cannot ship or record
+a review. Don't `aida claim` the spec first: the launch refuses a held spec.
+
+When you need an interactive lane you will steer, pre-create its worktree
+with the role on its lease, then start the session from inside it:
+
+```bash
+aida worktree add <SPEC> --role implementer --path ../wt-<spec> --branch <agent>/<spec>
+cd ../wt-<spec> && claude --bg ...
+```
+
+The lane takes its identity from the lease at session start (a `--bg`
+session inherits the claude daemon's environment, not yours), so don't
+juggle `AIDA_SESSION_*` variables on the launch line.
+<!-- trace:STORY-1662 | ai:claude -->
+
+**Concurrency cap.** Run **at most 3 live child sessions** at once, counting
+implementers and reviewers together, unless the operator's delegation names a
+different number. Dispatch from the ready set in `burndown plan` order and
+queue the rest; start the next child only when `aida ps` shows a slot free
+because a child exited or you stopped it. Fanning out the whole ready set
+multiplies token spend, and a failure in a wide fan-out is hard to attribute.
+<!-- trace:BUG-1816 | ai:claude -->
+
+**Per-child budget.** Every child gets a wall-clock and a token budget, written
+into its brief: by default about 90 minutes and one context window for an
+implementer, half of each for a reviewer. The budget flags on `aida queue work`
+(`--max-runtime`, `--max-tokens`, `--no-progress-minutes`) apply only to
+`--auto-complete` drains, which this skill does not dispatch, so for the
+children this skill launches **you** are the budget: the ELAPSED column of
+`aida ps` is the clock. A child reports its token usage only when it finishes,
+so the time budget is the one you enforce live; check the token budget against
+the child's final usage report and treat an overrun as exceeded. When a
+child runs past its budget: stop it (`TaskStop`, or `aida agent stop <name>`
+for an AIDA-launched seat), read its final report or
+`aida tail <SPEC> --no-follow -n 40`, record a PROXY DECISION on the spec with
+what was spent and why it stopped, and re-dispatch **once** with a narrower
+brief. If the second attempt also runs out, report the spec as blocked. Never
+retry silently, and never raise a budget just to keep going.
+
+A headless `aida queue work <SPEC> --role implementer --no-human` launch
+takes no brief from you: AIDA writes its prompt from the spec, so record
+anything it must know on the spec (`aida comment add`) before launching. The
+brief below is for an interactive lane started inside
+`aida worktree add <SPEC> --role implementer`. It must include:
+<!-- trace:STORY-1662 | ai:claude -->
+- Read `aida show <SPEC> --full` and the repo's CLAUDE.md. Work only in the
+  worktree.
+- Tests use fixtures only. Never touch the live store or real user files
+  (`~/.aida`, the crontab, system timers); use a fake HOME.
+- Put `trace:<SPEC> | ai:<tool>` markers in the language's plain line comment
+  (`//`, `#`), **never** in a doc comment (`///`, docstrings), where it can
+  leak into `--help` or generated docs. Keep spec IDs out of user-facing text.
+- Run the project's full check set, the same checks CI runs, and list them
+  explicitly.
+- Wait for long commands in the foreground with a timeout. **Never** use
+  `pgrep`/`until` polling loops.
+- **Never run a `.py` file or Python snippet as a shell script.** Bash runs
+  `import` as ImageMagick's screen-capture tool. Use `python3 file.py` or a
+  `python3 -` heredoc.
+- The child's wall-clock and token budget, and the instruction to stop and
+  report when it runs out, not to retry.
+- Read handoffs, plans and docs over ~200 lines with targeted reads
+  (`rg -n <term> <file>`, `sed -n '<a>,<b>p' <file>`), never whole-file reads.
+- Commit as `[AI:<tool>] type(scope): summary (<SPEC>)`, push the branch,
+  open its own PR and stop, as in step 4. It never ships, merges or records
+  a review.
+
+**Model.** Only the `Agent` tool inherits the orchestrator's model by default.
+For an AIDA-launched child, an unset model means the `[agents.<vendor>] model`
+config or, when that is empty, the vendor default. Pass the
+parent's model explicitly to inherit it: `--model` on `aida queue work`,
+`aida agent new claude` and `aida agent new codex`
+(`aida agent new antigravity` has no model option). Only store, lock or
+authority code justifies a stronger model than the parent's, and the brief
+says why.
+
+### 5. Fresh review of every branch
+
+Every branch gets a reviewer that did not write it, running as a **separate
+process with its own identity**. The approval that `aida pr ship` accepts is
+the one that reviewer records from its own reviewer seat. An Agent-tool
+subagent shares your session and seat, so its approval is refused at ship.
+
+1. Open the branch's PR if it has none
+   (`gh pr create --draft --head <branch> ...`), and note its number `<n>`.
+2. Launch the reviewer from Bash, as a `run_in_background` job, and wait for
+   it to exit:
+
+   ```bash
+   aida queue work PR-<n> --role reviewer --no-human --vendor claude
+   ```
+
+   It starts a headless reviewer in its own review worktree with a child
+   reviewer grant and the AIDA-generated review prompt. When it exits it
+   prints a summary.
+3. The job's exit status is the signal. Exit 0 with a `verdict:` line in
+   its summary means a verified verdict: read it with
+   `aida review verdict PR-<n> --json` (the PR's gate ledger; the
+   `.aida/review-verdicts/PR-<n>.json` file can be missing or a previous
+   round's). Exit 30 or any other non-zero exit means no verified verdict,
+   whatever a verdict file says; launch a new reviewer.
+
+Rules for the review launch:
+- **Don't write the reviewer's prompt.** No `claude -p "<your text>"`, no
+  `aida agent new --role reviewer --prompt ...` as the review of record, and
+  no verdict guidance or pre-digested conclusions. If the operator left
+  review checklist comments on the spec, the reviewer reads them itself; at
+  most, point at them in a spec comment.
+- **Never record a verdict yourself.** `aida review record` runs inside the
+  reviewer process, never from your shell.
+- At most 3 reviewer processes at once, one per PR, counted with
+  implementers against the concurrency cap. Don't pass `--sandbox`.
+- Always pass `--vendor claude`: under `AIDA_CONTAINED` the codex vendor
+  refuses.
+- If the launch refuses with "branch pr-<n> is held by worktree ..." (a previous
+  reviewer died or ran without `--no-human`), run
+  `aida session end --spec PR-<n> --remove --skip-ci --yes` and
+  `git branch -D pr-<n>`, then relaunch. If it refuses with "base is N commits
+  behind ... overlaps", have the author merge main into the branch first.
+
+The reviewer applies the strict tier itself when the diff touches drain logic,
+merge gates, store and cache writes, locks, authority and identity, or
+anything that launches unattended work.
+
+On `RequestChanges`, route the findings from the verdict file back to the
+implementer: relaunch `aida queue work <SPEC> --role implementer --no-human`
+on the existing branch, or mail an interactive lane
+(`aida mailbox send --to <lane> ...`) so it keeps its context. Include a PROXY DECISION on any
+routine design question. Then launch a **new** reviewer process at the new
+head. A stale approval (the head moved after review) also means a new
+reviewer; never use `--override-stale-approval`.
+
+Any code you write yourself, even a small integration fix, is reviewed by
+a reviewer process.
+
+On approval, run `aida comment add <SPEC> "Review: APPROVE (PR #<n> at <sha>)"`
+and queue the spec for a batch. Non-blocking notes worth doing become approved
+follow-up specs. Optional or data-gated notes become deferred specs with a
+trigger.
+<!-- trace:STORY-1654 | ai:claude -->
+
+### 6. Batched integration
+
+Put the approved branches into one integration branch based on
+`origin/main`. Follow `/aida-integrate`'s merge discipline.
+
+- **Stacked branches** (built on a parent that has since been squash-merged):
+  first run `git rebase --onto origin/main <parent-sha> <branch>`. Afterwards,
+  check that `git diff --stat origin/main HEAD` shows only that branch's own
+  files, and that nothing already on main was reverted.
+- Run the **project's full local check set** before pushing. For a failing
+  test, decide whether it's known-flaky (re-run it single-threaded) or a real
+  integration break.
+- **Mechanical** integration fixes can be made inside the batch, for example a
+  new struct field missing from a test fixture, or two branches bumping the
+  same contract version. Each fix is listed in the PR body, and the batch PR
+  is reviewed by a reviewer process at its own head (step 7).
+- A conflict that turns on a **design choice** goes to the advisor or the
+  operator. The proxy never resolves it.
+- If main moved while the checks were running, merge main in and re-run the
+  checks that could have broken.
+
+### 7. PR, CI, verified merge
+
+- Push the branch and open the PR with
+  `gh pr create --base <default> --title "[AI:<tool>] chore(integrate): batch N - SPEC-A SPEC-B" --body "<spec list + each mechanical fix made in the batch>"`.
+- Wait in a Bash `run_in_background` job, e.g.
+  `timeout 540 gh pr checks N --required --watch --fail-fast` (in a repo with no required
+  checks, use plain `--watch` and report that). Never poll from the model.
+  On GitLab or other forges, use the equivalent, or `/aida-integrate`'s forge
+  probes.
+<!-- trace:BUG-2492 | ai:codex -->
+- On watcher timeout (exit 124), inspect current checks and hold labels. A
+  pending merge hold requires clearance; stop and report it. If ordinary CI
+  is still running, start another bounded watcher.
+- The ship gate accepts an approval only at the PR's exact head, recorded by
+  a reviewer process. A batch PR's head is a new commit, so launch a reviewer
+  for it (`aida queue work PR-N --role reviewer --no-human --vendor claude`, step 5) and wait
+  for `Approved` at that head. A single-branch batch whose head a reviewer
+  already approved needs no second review.
+- Ship with `aida pr ship N`. It checks the approval and CI, squash-merges,
+  and pulls. Never ship over a refused approval; launch a new reviewer.
+  In the PR body, end a line with `(SPEC-ID)` **only when this merge completes
+  that spec**. For a slice, trailer the child task, never the parent.
+- **Never** use `--admin`. Never disable or edit required checks or branch
+  protection. If `merge-hold-gate` is pending or failing, or a hold is set, stop and report.
+- **Verify MERGED** with `gh pr view N --json state` before touching specs.
+  After a network error, re-check instead of assuming.
+- Run `aida pull` and confirm the specs auto-completed. `closure:pending` specs
+  correctly stay at Done.
+- Clean up the worktrees and branches. Keep any branch that a stacked
+  follow-up still builds on.
+
+### 8. Post-merge live actions
+
+Some merges need a live action, such as a one-time data migration or repairing
+an **already-enabled** scheduled job.
+
+- If the action runs the project's own tool, rebuild or install the merged
+  version first.
+- Dry-run first, and proceed only if the result matches what reviewers
+  predicted.
+- Back up anything the user owns before touching it, and change only the lines
+  your tool owns.
+- Verify afterwards, and record the result on the spec.
+- **Never** create or enable a scheduled or unattended run. Changes to
+  user-owned files outside the repo need the operator's OK, unless the
+  delegation covers them explicitly.
+
+## Guardrails (non-negotiable)
+
+- **Never merge as proxy a diff that changes authority.** That covers grants,
+  roles, human-at-TTY floors, merge-hold, unattended-run enablement, and your
+  own permissions. Push it, have it reviewed, and **leave the PR open for the
+  operator**.
+- **Never** force-push the default branch. Use `--force-with-lease` only on
+  your own branches.
+- **Never** bypass a human-at-TTY floor, and never use `--admin`. If an agent
+  could flip a floor by itself, that is a **blocker bug**: file it.
+- **Proxy authority is for routine calls, not a rubber stamp.** If a change has
+  a high blast radius and the diff doesn't fully convince you, leave it
+  unmerged and escalate.
+- **Deferral never counts toward the goal.** List every deferred item and its
+  trigger in each report.
+- **No model-side polling.** A waiter running `pgrep -f "<pattern>"` can match
+  its own command line and never exit. Stop stale waiters and read their
+  output files directly.
+- **Honest reporting.** Never fabricate data or mark undone work done. If an
+  inherited artifact looks fabricated, reopen it with a CORRECTION comment.
+- **Look before deleting.** Inspect a stray file first, and say why you removed
+  it.
+- **Exactly one orchestrator per repo.** If you find an unplanned second one,
+  the later session stands down unless the operator has handed the seat to it:
+  it stops its duplicate agents and hands its items to the earlier one through
+  the handoff and a direct message. In a planned rotation the incoming session
+  is the successor: it asks the outgoing one to finish its rotation checklist
+  and asks the operator to stop it.
+
+## Context and handoff
+
+The loop is long. Keep subagent transcripts out of your context and rely on
+their summaries. Refresh the handoff after every batch so a restart never loses
+state:
+
+```bash
+aida session handoff --seat orchestrator --write - <<'EOF'
+Goal; batch flow; MERGED; IN FLIGHT (spec, worktree, branch, head sha, review
+state, PR/run ids); AWAITING OPERATOR; DEFERRED (+trigger); CLOSURE-PENDING
+(+trigger); known flakes.
+EOF
+```
+
+**Bounded check-ins.** Look at `aida ps` and a child's summary when the child
+exits or at a batch boundary, not on a timer, and never re-send the board, the
+handoff or a spec's full history to a running child: a follow-up message
+carries only the new finding. Read handoffs, plans and docs over ~200 lines
+with targeted reads (`rg -n <term> <file>`, `sed -n '<a>,<b>p' <file>`), not
+whole-file reads.
+
+**The context ceiling is a soft limit.** Do not stop the loop because the
+conversation is getting long. The harness compacts the conversation
+automatically; the handoff you refresh after every batch is what survives that
+compaction, so a full context costs nothing the substrate does not already
+hold. After a compaction, re-read the handoff
+(`aida session handoff --seat orchestrator --show`), the open list and
+`aida ps`, then carry on with the next batch. If nobody is around, the open
+list keeps growing; a session that parks itself at an advisory ceiling stops
+all work until a human notices.
+
+**Rotating out** is reserved for two cases: the operator asks for it, or the
+session is genuinely broken (tools failing repeatedly, state you cannot
+reconcile with the substrate, a harness that will not compact). It hands off to
+a successor rather than stopping the loop: dispatch nothing new; stop or let
+finish every subagent, background shell and waiter until none is running; run
+`/goal clear` if a goal is set; write the handoff **last**; then tell the
+operator to start the successor and to exit this session with **Exit and stop
+tasks**, never "Move to background". A backgrounded session keeps driving the
+loop. If a session was backgrounded anyway, find it with `claude agents` and
+stop it with `claude stop <id>`.
+
+**Taking over:** before acting on the handoff, check for a live predecessor
+(`claude agents`, `ListAgents`, `aida ps`). If one is still running, message it
+and ask the operator; do not start a second loop.
+
+## Report to the operator
+
+After each batch, report in plain language, leading with the outcome (use
+`PushNotification`, if available, when the list drains or an item becomes
+blocked on the operator):
+- what merged and which specs completed;
+- what's in review, and the real bugs reviewers found on main;
+- the proxy decisions made;
+- what was deferred, and why;
+- what is blocked on the operator, and why.

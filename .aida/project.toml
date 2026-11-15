@@ -1,0 +1,40 @@
+# AIDA project manifest — what this project IS.
+#
+# Checked in on purpose: these are the facts no scan can derive, so they
+# travel with the repository instead of living on one machine. Tools read
+# this file; AIDA is the only thing that writes it, and only to create it.
+# Your edits are never overwritten — `aida init` leaves an existing
+# manifest alone.
+#
+# Every field is optional. Schema: docs/internal/project-manifest.md
+
+schema = 1
+
+[project]
+name = "test_multinode1"
+
+# One line: what this is.
+description = "One-line project description."
+
+# WHY it exists — the one thing no tool can work out for you, and the
+# reason this file is worth keeping. What was the itch?
+# NOT RECORDED means this item was skipped at init, not answered.
+why = "NOT RECORDED"
+
+# Is anyone working on this? One of: alive, parked, abandoned
+# liveness = "alive"
+
+# How far along, independent of whether it is active. One of:
+# idea, prototype, alpha, beta, stable, maintenance, sunset
+# stage = "prototype"
+
+# Who to ask.
+# owner = ""
+
+# A category you assert about this project. Free text — consumers
+# interpret it; AIDA does not validate it.
+# classification = ""
+
+# repository = ""
+# homepage = ""
+# tags = []

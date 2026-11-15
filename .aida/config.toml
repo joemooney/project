@@ -1,0 +1,537 @@
+# AIDA distributed mode configuration
+[deployment]
+mode = "distributed"
+store_path = ".aida-store"
+store_type = "worktree"
+branch = "aida-store"
+
+[store.sync]
+# Auto-push store commits after local writes. Values: manual,
+# session-end, per-write, periodic. `periodic` is reserved until
+# aida-worker (EPIC-30) ships.
+auto_push = "manual"
+
+# trace:EPIC-1-052 Phase 2 | ai:claude
+# How `aida add` chooses between agreed-id blocks and node-aware ids:
+#   node-aware-only      — never use blocks; always FR-<NODE>-<SEQ>
+#   blocks-then-fallback — try block first; fall through silently (default)
+#   blocks-only          — error if no block is allocated for the type
+#
+# counter_scope (FR-271):
+#   global               — single counter shared across all types (default for new projects)
+#                          → FR-1, BUG-2, EPIC-3, ... ids globally unique by number
+#   per-type             — separate counter per type prefix (legacy default)
+#                          → FR-1, BUG-1, EPIC-1, ... each type starts fresh
+[id_format]
+policy = "blocks-then-fallback"
+counter_scope = "global"
+
+# trace:TASK-281 | ai:claude
+# Auto-claim a fresh block when aggregate remaining IDs drop below
+# threshold. On by default (threshold 20, size 100). Opt out with:
+#   [block_allocation]
+#   auto_claim = false
+# Per-type override (e.g. larger BUG blocks):
+#   [block_allocation.bug]
+#   auto_claim_threshold = 50
+#   auto_claim_size = 200
+
+# trace:EPIC-35 | ai:claude
+# Which forge backs the PR/MR + CI lifecycle. Auto-detected from the
+# origin host at init: github.com -> github, gitlab.* -> gitlab,
+# otherwise pure-git (works direct-to-default-branch; merge = git
+# ancestry + (SPEC-ID)-trailer auto-complete, no forge needed).
+[forge]
+provider = "pure-git"
+
+# trace:TASK-304 | ai:claude  (suggest_threshold: trace:TASK-697)
+# Whether AIDA proactively suggests `aida ultraplan <SPEC>` for specs
+# where planning would help. Planning is human/agent driven, so there
+# is no "auto-pull" mode — only:
+#   never      — `aida ultraplan` is disabled (refuses with a message)
+#   on-demand  — current behavior: run `aida ultraplan SPEC` yourself
+#   suggested  — pickup surfaces (/aida-pickup, queue work/list head)
+#                hint when the head spec passes suggest_threshold
+# suggest_threshold only applies in `suggested` mode. Heuristics:
+#   spec-thinness       — (default) suggest when the spec is
+#                         under-specified: no design section (## Proposed
+#                         shape / Design / Approach / ...) yet a
+#                         substantive body. Well-specified specs already
+#                         carry their plan, so they stay quiet (SPIKE-8).
+#   acceptance-bullets>N — (legacy) suggest when the `## Acceptance`
+#                         checkbox count exceeds N. Note: bullet count
+#                         anti-correlates with where planning helps.
+[ultraplan]
+mode = "on-demand"
+suggest_threshold = "spec-thinness"
+
+# Policy for `aida intake` — the headless advisor pass that reads open
+# specs and proposes approve/reject/park/queue dispositions (propose-only
+# by default; `--apply` executes). Every knob has a safe default, so this
+# whole section is optional — uncomment a line only to change a default.
+#
+# disposition_bias — how aggressively the agent proposes approve:
+#   approve-eligible  — (default) propose approve for every eligible
+#                       spec; the propose-mode review is the filter
+#   park-aligned      — approve only when a spec is BOTH eligible AND
+#                       clearly aligned with project priorities; else
+#                       park for a human
+#   park-conservative — park whenever unsure
+#
+# do_not_approve_classes — requirement types the agent can NEVER propose
+# approve for; they are fenced out of its candidate set entirely. The
+# default is the strategic + knowledge-graph types. An empty list opens
+# the gate (the propose-mode review still applies).
+#
+# on_apply — what `--apply` does after queuing approved specs:
+#   queue — (default) stop at queuing; draining stays a separate,
+#           explicit command
+#   drain — chain straight into an implementer drain after queuing
+#
+# [intake]
+# disposition_bias = "approve-eligible"
+# do_not_approve_classes = ["vision", "epic", "principle", "constraint", "decision", "term"]
+# on_apply = "queue"
+
+# Authority envelope for advisor autopilot (`aida autopilot`). Autopilot is
+# not a second disposition engine — it is a bounded-authority wrapper over
+# the same grooming pass `[intake]` above configures. For each disposition
+# the advisor proposes, the envelope decides one of: auto-execute, hold for
+# a human, or escalate. Every knob has a conservative default, so this whole
+# section is optional — uncomment a line only to change a default.
+#
+# One key per action class; each takes one of three values:
+#   auto    — autopilot may perform the action on its own
+#   propose — autopilot may only propose it; a human reviews before it runs
+#   never   — autopilot may never perform it
+#
+# Defaults: the reversible, low-blast actions are `auto`; the two
+# irreversible dispositions (approve, reject) are `propose`. An unknown key
+# or an unknown value is ignored, leaving that action at its default.
+#
+# These knobs are a CEILING, not a blanket grant. Three bounds sit OUTSIDE
+# the map and cannot be widened here:
+#   * the candidate fence — which specs are touchable at all (`[intake]`);
+#   * grounding — a call resting on judgment a freshly-started agent cannot
+#     reconstruct from what is written down always escalates;
+#   * the risk ceiling — high-risk and unknown-blast-radius work always
+#     escalates.
+# Context can only TIGHTEN the envelope, never widen it: an unattended run
+# demotes every `propose` to `never` (nobody is there to be asked), and an
+# active solo posture on keystone work demotes everything to `never`.
+#
+# What the envelope drives today: `aida autopilot inspect` — a read-only
+# dry-run of what autopilot WOULD decide over the current groom candidates,
+# recorded to a local audit log you can review (`aida autopilot audit`) and
+# reverse (`aida autopilot challenge`) — and the draft approve-gate on
+# `aida zen <spec>`. There is deliberately NO autopilot execution path on
+# the grooming pass itself yet, so widening a key below changes those two
+# surfaces and nothing else.
+#
+# [autopilot]
+# approve = "propose"
+# reject = "propose"
+# dedupe = "auto"
+# tag = "auto"
+# queue = "auto"
+# park = "auto"
+# route = "auto"
+# comment = "auto"
+# ask = "auto"
+
+# Worktree creation. AIDA initializes recursive git submodules by default
+# after creating or claiming a worktree, so repos that vendor dependencies
+# through `.gitmodules` are build-ready before pickup succeeds. Set this
+# false to skip the potentially-expensive init; AIDA will print the exact
+# recovery command when `.gitmodules` is present.
+[worktree]
+init_submodules = true
+
+# Worktree warm-pool (STORY-714). Pooling is ON by default: a session's
+# worktree is acquired from a recycled pool and RESET (not deleted) on
+# hand-back, so its compiled `target/` stays warm across fan-out. Escape
+# hatches: set `enabled = false` here, pass `--no-pool` to a single
+# `aida session start`, or pass `--remove` to `aida session end` to delete
+# the worktree instead of returning it.
+[worktree_pool]
+enabled = true
+# max_trees = 16   # cap on pooled worktrees (default 16)
+# worktree_parent = "../aida-worktrees"   # nest every AIDA-created worktree
+#                          # under ONE directory instead of scattering them as
+#                          # siblings of the repo. An editor/agent folder-trust
+#                          # grant inherits to children, so you trust this one
+#                          # directory once and no future worktree prompts
+#                          # again. Relative paths resolve against the repo
+#                          # root; unset keeps the sibling layout (default)
+# lease_ttl_secs = 21600   # a durable lease older than this (with no live
+#                          # owner) is treated as EXPIRED and reclaimed by
+#                          # the next acquire — guards against reservation
+#                          # leaks when a session dies (default 6h)
+#
+# Pre-warm on create: set `prewarm_build = true` to kick off a backgrounded
+# `cargo build` when a NEW pool tree is created, so its `target/` is warm
+# before the first fanned agent builds in it (best-effort, non-blocking).
+# Like every worktree-pool hook, this executes a build, so it is honored
+# ONLY from your machine-global `~/.aida/config.toml` — never a checked-in
+# repo config — and is ignored here.
+
+# Per-seat job registry (`aida schedule`, alias `aida cron`). Two job kinds:
+#   substrate — `command = "<allow-listed aida subcommand>"`; no LLM; run by
+#               `aida schedule tick` (the per-turn hook) or real cron
+#               (`aida schedule emit-cron`). Idempotent, quiet when idle.
+#   seat      — `prompt = "..."`, `seats = ["advisor"]`; needs the seat's
+#               judgment; NEVER executed by the scheduler. It becomes due and
+#               is delivered to whoever holds the seat (`aida awaiting
+#               --notice`, the pickup prompt, `aida agent new`); the seat
+#               reports back with `aida schedule done <job>`.
+# Schedules (combine `every` + `on` for event fast path + interval fallback):
+#   every = "30m"                       interval heartbeat
+#   on    = ["PrMerged", "MailReceived"] events from .aida/events.jsonl
+#   when  = "mail.oldest_unread_age > 15m"   predicate; fires once per episode
+# Machine-wide jobs go in ~/.aida/schedule.toml (same shape); a project entry
+# with the same name wins. Every run is ledgered on the aida-store branch
+# (schedule/<job>.yaml). The product/advisor handoff duties are enabled
+# defaults; infrastructure examples remain commented. Seat jobs only mark work
+# due — they never execute an LLM or mutate product state without the seat.
+# trace:STORY-1047 trace:STORY-1226 trace:STORY-1351
+
+[schedule]
+min_gap = "60s"
+
+[[schedule.jobs]]
+name = "mailbox-triage"
+seats = ["advisor"]
+every = "30m"
+on = ["MailReceived"]
+prompt = "Triage the mailbox: read each item, answer bounded requests, and route or escalate the rest."
+enabled = true
+
+[[schedule.jobs]]
+name = "product-wave-relaunch"
+seats = ["product"]
+every = "5m"
+when = "drain.lock_free == true && queue.drain_mode_ready > 0"
+prompt = "The drain lock is free and eligible work is queued. Verify the queue head and launch the next product wave."
+enabled = true
+
+[[schedule.jobs]]
+name = "shelf-triage"
+seats = ["advisor"]
+on = ["QueueDrained"]
+prompt = "Triage newly shelved work from the completed queue run: classify the failure, write a concrete rework brief, and requeue or escalate it."
+enabled = true
+
+# STORY-1484 slice C: pick up an orphaned cache refresh request (its worker
+# was killed, or its requester exited before spawning one). A silent no-op
+# when no request is pending, so an enabled-by-default entry trains nobody to
+# ignore it; when the request's worker has crash-looped, the tick reports the
+# stand-down instead of spawning a fourth worker.
+# trace:TASK-1527 | ai:claude
+[[schedule.jobs]]
+name = "cache-refresh-tick"
+command = "cache refresh --if-requested"
+every = "15m"
+enabled = true
+
+# Catch up an existing enabled history index; disabled/missing/busy is a no-op.
+# trace:STORY-1661 | ai:codex
+[[schedule.jobs]]
+name = "history-index-tick"
+command = "cache refresh --history --if-behind"
+every = "15m"
+enabled = true
+
+# STORY-1917: execute pending `take` and `impl` dispatch requests outside any
+# agent sandbox. `while` gates the 2-minute cadence: the tick runs (and the
+# schedule ledger is written) only while a mandate covering `dispatch` is
+# active and requests are pending, so with no dispatch mandate it never runs.
+# `review`, `flow`, and `train` remain Pending (`waiting for serve`).
+# trace:STORY-1917 | ai:agy
+[[schedule.jobs]]
+name = "dispatch-tick"
+command = "dispatch tick"
+every = "2m"
+while = "mandate.dispatch_active == true && dispatch.pending > 0"
+enabled = true
+
+# STORY-2220: the background docs sweep. Daily, and only while the queue is
+# idle and the drain lock is free, so it never takes a lane from feature work;
+# when the `while` gate is closed the run is skipped, not queued. It reviews
+# the docs touched since the last sweep and, in the default report mode, mails
+# the findings to the product seat (one mail per run, none when clean).
+# `[docs_sweep] mode = "pr"` batches mechanical fixes into one docs-only PR.
+# trace:STORY-2220 | ai:claude
+[[schedule.jobs]]
+name = "docs-sweep"
+command = "docs sweep"
+every = "1d"
+while = "queue.project_work_idle == true && drain.lock_free == true"
+enabled = true
+
+# STORY-HOME-128: the mail-backlog guard. Every 30m it looks for unread
+# [request]/[handoff] mail older than [doctor.mail_backlog] max_age_mins
+# (default 30) addressed to a live agent or a role one holds, and nudges each
+# recipient through its wake path: a reminder mail an armed Codex session's
+# mail wake delivers, a `mail-backlog-guard-route-<seat>` due job for a Claude
+# seat, or a `mail-backlog-guard-route-operator` item in `aida awaiting` when
+# there is no wake path. Silent with no backlog; the same message is re-nudged
+# at most every renudge_mins (default 60). Enabled: unlike the gates below it
+# needs no per-host threshold to be right.
+# trace:STORY-HOME-128 | ai:claude
+[[schedule.jobs]]
+name = "mail-backlog-guard"
+command = "doctor check mail-backlog"
+every = "30m"
+enabled = true
+
+# The performance guard. Scaffolded DISABLED and commented, deliberately: a
+# project has nothing to guard until it declares a budget under
+# [performance.budgets], and a job that runs against an empty budget list would
+# report success forever while measuring nothing.
+#
+# --fail-on-findings is what makes this a GATE rather than a report. Without it
+# `doctor check` exits 0 even when it finds something, so the tick would run
+# the check on a cadence and discard the answer. A gating job that has never
+# been demonstrated to exit non-zero is not a guard — see the registry note in
+# the discipline pack before adding one.
+#
+# The routing job keys on CronJobFailed, which the tick emits when a SUBSTRATE
+# job exits non-zero. That is the chain end to end: --fail-on-findings makes
+# the check exit non-zero, the non-zero exit emits CronJobFailed, and the seat
+# job turns that event into a due item in `aida awaiting`. The route binds to
+# its own guard with `on = ["CronJobFailed:<guard-job>"]`: a bare
+# "CronJobFailed" matches EVERY substrate job's failure, so one guard's trip
+# would wake every route with that one guard's evidence. The substrate run is
+# ledgered at schedule/<job>.yaml independently, so a trip is BOTH durable and
+# noticed — either alone reproduces some version of the defect this closes.
+#
+# [performance.budgets]
+# show = 1000
+#
+# [[schedule.jobs]]
+# name = "performance-guard"
+# command = "doctor check performance --fail-on-findings"
+# every = "6h"
+# enabled = false
+#
+# [[schedule.jobs]]
+# name = "performance-guard-route"
+# seats = ["advisor"]
+# on = ["CronJobFailed:performance-guard"]
+# prompt = "A performance budget was breached. Use the routed trip evidence and its matching entry at .aida-store/schedule/performance-guard.yaml to confirm the budget in force, then decide: real regression, or a budget that needs changing deliberately."
+# enabled = false
+
+# [[schedule.jobs]]
+# name = "session-reap"
+# command = "session reap"
+# every = "30m"
+# enabled = false
+#
+# [[schedule.jobs]]
+# name = "doctor"
+# command = "doctor"
+# every = "6h"
+# enabled = false
+#
+# [[schedule.jobs]]
+# name = "queue-gc"
+# command = "queue gc"
+# every = "2h"
+# enabled = false
+#
+# [[schedule.jobs]]
+# name = "cache-verify"
+# command = "cache verify"
+# every = "24h"
+# enabled = false
+#
+# [[schedule.jobs]]
+# name = "mailbox-latency"
+# command = "notify check"
+# when = "mail.oldest_unread_age > 15m"
+# enabled = false
+#
+# [[schedule.jobs]]
+# name = "groom-drafts"
+# seats = ["advisor"]
+# every = "1h"
+# prompt = "Groom the draft inbox: `aida groom` (propose), then `aida groom --apply`."
+# enabled = false
+#
+# STORY-1367's three first jobs: a job whose whole point is to catch a
+# recurring check nobody remembers to run. Same GATING shape as
+# performance-guard above — `--fail-on-findings` is what turns a report into a
+# job the tick can route; the routing job keys on CronJobFailed the same way.
+# All three are commented out here, deliberately, not enabled: unlike the
+# product/advisor handoff duties above, none of them is universally correct
+# for a downstream project on day one, and the scaffold's rule (see the
+# performance-guard comment) is that a gating job ships enabled only where
+# it has been demonstrated to trip on something real.
+#   - hub-drift is meaningless without a SECOND hub (`[store.sync]
+#     mirror_remotes`) — most projects have exactly one, where the check is
+#     permanently silent, correctly, but a permanently-silent enabled-by-
+#     default job is still noise in `aida schedule list`.
+#   - stranded-branches needs a project old enough to have accumulated
+#     abandoned worktree branches; noise on a fresh project.
+#   - disk-headroom IS universal (every project runs on a filesystem with a
+#     floor) and is the strongest default-on candidate of the three, but the
+#     floor (`min_free_gib`, default 60) is a per-host number this scaffold
+#     cannot know, so it ships commented for the same reason performance-guard
+#     does: enabling a threshold nobody has confirmed fits the host is how a
+#     guard trains people to ignore it.
+# trace:STORY-1367 | ai:claude
+#
+# [[schedule.jobs]]
+# name = "hub-drift-guard"
+# command = "doctor check remote-drift --fail-on-findings"
+# every = "6h"
+# enabled = false
+#
+# [[schedule.jobs]]
+# name = "hub-drift-guard-route"
+# seats = ["advisor"]
+# on = ["CronJobFailed:hub-drift-guard"]
+# prompt = "A tracked branch (main or aida-store) differs across hubs. Use the routed trip evidence and `aida remote status` to reconcile — never force-push a shared branch."
+# enabled = false
+#
+# [[schedule.jobs]]
+# name = "stranded-branches-guard"
+# command = "doctor check stale-remote-branches --fail-on-findings"
+# every = "24h"
+# enabled = false
+#
+# [[schedule.jobs]]
+# name = "stranded-branches-guard-route"
+# seats = ["advisor"]
+# on = ["CronJobFailed:stranded-branches-guard"]
+# prompt = "One or more remote branches carry commits with no open PR. Review each: open a PR, or delete by hand — never auto-delete a Keep-flagged branch."
+# enabled = false
+#
+# [doctor.disk_headroom]
+# min_free_gib = 60
+# # STORY-1916: at or above this used % of the build-cache filesystem, the
+# # scheduled guard deletes per-worktree caches (target/worktrees/<name>)
+# # idle for emergency_idle_hours, until usage drops below the ceiling minus
+# # emergency_margin_pct; each delete is ledgered and the operator notified.
+# # 0 turns the emergency tier off.
+# emergency_used_pct = 95
+# emergency_margin_pct = 5
+# emergency_idle_hours = 2
+#
+# [[schedule.jobs]]
+# name = "disk-headroom-guard"
+# command = "doctor check disk-headroom --fail-on-findings"
+# every = "30m"
+# enabled = false
+#
+# [[schedule.jobs]]
+# name = "disk-headroom-guard-route"
+# seats = ["advisor"]
+# on = ["CronJobFailed:disk-headroom-guard"]
+# prompt = "Free disk space is still below the configured floor after the guard ran `aida worktree reclaim --apply` itself (the routed evidence says how much it freed). Do not just repeat that reclaim: remove finished worktrees with `aida session reap`, or raise [doctor.disk_headroom] min_free_gib deliberately. Note `cargo clean` is NOT the reclaim for this: inside a worktree it clears the shared CARGO_TARGET_DIR, which points at the main checkout, so it deletes the live cache and leaves the stale ones."
+# enabled = false
+#
+# Hourly hygiene pass: reaps finished + merged + exited sessions, gcs dead
+# agent-registry rows, and deletes worktree caches idle 24h+ (no live lease,
+# no open PR, never uncommitted work). Silent when clean; routes only what it
+# had to keep, naming the act needed. trace:STORY-2351 | ai:claude
+#
+# [[schedule.jobs]]
+# name = "session-hygiene"
+# command = "session hygiene"
+# every = "1h"
+# enabled = false
+#
+# [[schedule.jobs]]
+# name = "session-hygiene-route"
+# seats = ["advisor"]
+# on = ["CronJobFailed:session-hygiene"]
+# prompt = "The hourly hygiene pass kept something it must not touch on its own. The routed trip evidence names each item and the act it needs. Never force-reap or delete a dirty worktree to clear it."
+# enabled = false
+#
+# Runaway-seat watchdog: trips on a seat woken far too often, spending far
+# too fast, fed the same injected prompt over and over, or past its context
+# ceiling, and on the project's 24h token spend against a budget. Reads
+# Claude Code transcripts and headless logs on disk; zero model tokens.
+# Commented out because the daily budget is a per-project number this
+# scaffold cannot know. trace:STORY-1462 | ai:claude
+#
+# [watchdog]
+# max_wakes_per_hour = 120
+# max_tokens_per_hour = 500000000
+# daily_token_budget = 6000000000
+# budget_alert_pct = 90
+# restart_context_tokens = 0   # off; e.g. 300000 to recommend a restart
+# blind_alert_after = 4        # consecutive degraded/unknown runs before a self-alert (~1h at the 15m tick below); 0 = off
+#
+# [[schedule.jobs]]
+# name = "watchdog"
+# command = "doctor check runaway-seats --fail-on-findings"
+# every = "15m"
+# enabled = false
+#
+# [[schedule.jobs]]
+# name = "watchdog-route"
+# seats = ["advisor"]
+# on = ["CronJobFailed:watchdog"]
+# prompt = "A seat tripped the runaway-seat watchdog. Use the routed trip evidence (session, rule, measured value, threshold) to stop the tick or loop that is waking it, or hand off and restart a seat past its context ceiling. Never answer by adding another poll."
+# enabled = false
+#
+
+# Store-sync fan-out (STORY-760). By default automatic store pushes send
+# the orphan store to `origin` only. Mirror hubs are also updated by
+# `aida db sync --push`, `aida pull`, `aida remote mirror-sync`, or an
+# opt-in `hub-mirror-sync` schedule job. Register that job hourly (strictly
+# shorter than any drift guard interval) so transient failures get retries;
+# no mirror-sync route job is intended, since `hub-drift-guard` escalates
+# drift that persists. A non-fast-forward mirror-sync failure exits non-zero
+# and must be reconciled deliberately; ordinary store writes remain best-effort.
+# Check drift anytime with `aida remote status`.
+#
+# A clone that must push the store to some hubs only declares them in its
+# untracked machine-local layer (`aida remote push-hubs gitlab`); one clone
+# that reaches every hub runs the union reconcile hourly (`aida remote bridge
+# --enable`). `hub-drift-guard` still escalates drift the bridge cannot union.
+#
+# [store.sync]
+# mirror_remotes = ["gitlab"]
+
+# Effort-balance intent-capture target (TASK-1522): advisory floor on the
+# share of newly completed specs with at least one traced test criterion.
+# Reported by `aida criteria coverage` and `aida status`; not enforced.
+#
+# [capture]
+# criterion_test_floor_pct = 50
+
+# Contained-launch egress allowlist. The native sandbox PROMPTS on a new
+# network domain, and a headless contained launch auto-denies that prompt, so
+# `gh` / `git fetch` / `aida review record` fail inside a contained reviewer
+# unless the hosts AIDA work needs are pre-allowed here. Every other host stays
+# denied. Add your own forge host (a self-hosted GitLab, say) when you use one.
+[contained]
+allowed_hosts = [
+  "github.com", "api.github.com", "objects.githubusercontent.com", "codeload.github.com",
+  "api.anthropic.com", "statsig.anthropic.com",
+  # trace:BUG-2392 | ai:codex
+  "api.openai.com", "chatgpt.com", "auth.openai.com",
+  "static.crates.io", "index.crates.io", "crates.io",
+  "registry.npmjs.org",
+]
+
+# aida:project-capabilities (STORY-1467)
+# Repo facts detected at `aida init` (re-run init to refresh).
+# class: github | gitlab | pure-git | local-only.
+# ci: available | unavailable | not-applicable | unknown; `unknown`
+# means detection could not tell and is never assumed either way.
+# Per-machine forge CLI/auth state lives in the gitignored
+# .aida/capabilities.local.toml, never here.
+[project.capabilities]
+class = "local-only"
+ci = "not-applicable"
+ci_config = []
+
+[scaffold]
+footprint = "full"
+
+[agents]
+enabled = ["claude", "codex", "antigravity"]

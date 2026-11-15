@@ -1,0 +1,69 @@
+# Discipline for AIDA-using sessions
+
+How to work effectively with AIDA — habits, vocabulary, and workflow patterns for any project that uses AIDA (not about AIDA's internals). Scaffolded by `aida init`; edit them to fit your team — `aida init --refresh` won't overwrite your edits.
+
+## The guides
+
+| Guide | What it covers |
+|-------|----------------|
+| [`advisor-role.md`](advisor-role.md) | The advisor seat — its responsibilities, what it does *not* do, and the three autonomy modes |
+| [`two-seat-protocol.md`](two-seat-protocol.md) | Product/advisor independence, handoffs, and ownership of judgment gates |
+| [`rework-brief-craft.md`](rework-brief-craft.md) | Turning a reviewer verdict into a cold-session-safe implementation handoff |
+| [`seat-recovery-playbooks.md`](seat-recovery-playbooks.md) | Recovery for stale/diverged branches, stranded commits, hold shelves, store divergence, and stacked PRs after a squash-merged base |
+| [`implementer-discipline.md`](implementer-discipline.md) | The implementer's six rules: one-spec-per-session, exit-after-ship, poll-briefs, ship-full-acceptance, read-pending-brief-banner, advise-escape — each linked to the runtime substrate-bouncer that enforces it — plus a falsification-discipline rule: a green mutation is not evidence until it's shown to have changed behaviour |
+| [`integrator-role.md`](integrator-role.md) | The integrator seat — owns the merge cascade (rebase, mechanical-conflict resolution, CI watch, squash-merge, `aida pull`); escalates semantic conflicts to the advisor, missing verdicts to the reviewer, real failures to the implementer |
+| [`docs-lane.md`](docs-lane.md) | The single-writer docs lane (SPIKE-10 MVP) — one agent owns `docs/`, every other agent FLAGS via the `needs-docs` routing primitive instead of editing; drain via `/aida-burndown` filtered to docs + a periodic `/aida-docs-review` sweep; single-writer stays conventional |
+| [`observation-discipline.md`](observation-discipline.md) | When to file an `aida findings add` observation vs an immediate BUG/TASK; the recurrence-as-promotion signal |
+| [`lifecycle-vocabulary.md`](lifecycle-vocabulary.md) | Precise words for each lifecycle state — committed vs pushed vs merged vs completed vs released |
+| [`product-glossary.md`](product-glossary.md) | Plain-language product terms: merge hold, mandate, grant, hub, … |
+| [`machinery-glossary.md`](machinery-glossary.md) | One-paragraph definitions of AIDA's orchestration / session / autonomy machinery — orchestrator, phase, drain, lease, role, scope, session, worktree, sentinel, batch, autonomy mode |
+| [`tag-conventions.md`](tag-conventions.md) | The `aida:<subcommand>` colon-namespaced tag convention, plus the flat behavior/provenance namespace and existing colon namespaces (`batch:`, `lifecycle:`, …) |
+| [`workflow-patterns.md`](workflow-patterns.md) | `/goal` prompt phrasing, parallel-choice vs sequential-step UI, planning-pass file hygiene, and why recursive-failure-risk fixes ship at the keyboard not the drain |
+| [`backlog-grooming.md`](backlog-grooming.md) | Grooming the Approved/Planned backlog — bucketing by tag/type/priority, what to queue vs archive vs escalate, and the file-overlap conflict heuristic |
+| [`autonomous-burndown.md`](autonomous-burndown.md) | Draining a ready backlog hands-off — the worktree-isolated implementer fan-out + integrator loop, the pickability gate, punt-and-continue, never-down-tools, and `/aida-burndown` vs the orchestrator drain |
+| [`fire-mode.md`](fire-mode.md) | Fire mode — the advisor-driven parallel fix/review/ship burndown under an operator mandate: what the mandate permits and never waives, risk tiers, the two-round cap, serial shipping, and hold-clear conditions (procedure: `/aida-fire`) |
+| [`git-sync-and-review.md`](git-sync-and-review.md) | Recovering when `aida pull` refuses (divergent branches) + the `aida review prompt` workflow — read-on-demand detail kept out of the always-in-context `AIDA.md` |
+| [`session-discipline.md`](session-discipline.md) | Per-session habits — verify before filing, pause for design input, trust the reviewer, and more |
+| [`spec-authoring.md`](spec-authoring.md) | Keep merge-time proof on the shipping spec and move post-deployment outcome measurement to a blocked follow-up spec |
+| [`skill-prompt-kinds.md`](skill-prompt-kinds.md) | Classifying `AskUserQuestion` prompts into mechanical vs design-fork kind, and their `--zen` pause behavior |
+| [`substrate-as-bouncer.md`](substrate-as-bouncer.md) | The substrate-as-bouncer principle, detailing the pre-commit gitignored check hook and reviewer PR gates |
+| [`agent-agnostic-vs-claude-specific.md`](agent-agnostic-vs-claude-specific.md) | Which discipline is universal (enforced by substrate gates, every agent) vs Claude Code-shaped convenience (`.claude/skills`, slash commands, memory pack) — so Codex/Antigravity users can tell the load-bearing from the optional |
+| [`brief-polling.md`](brief-polling.md) | How agents should poll AIDA's brief surface — the scratchpad-drift failure mode and the `aida queue done` pending-brief banner |
+| [`robust-project-root-resolution.md`](robust-project-root-resolution.md) | Project-root resolution fallbacks, explaining how skill-rendering gracefully handles missing git repositories |
+| [`skill-cli-symmetry.md`](skill-cli-symmetry.md) | When a skill's deterministic slice ships as a CLI verb, the parent skill must *call* that verb in the same PR rather than re-implement the logic — the same anti-drift discipline as the CLI↔MCP mirror (STORY-82) |
+
+## Local testing tiers
+
+The full workspace suite runs only in CI, at the PR head. Never run
+`cargo test --workspace` locally; test by the spec's risk tier:
+
+| Tier | Run locally |
+|------|-------------|
+| FASTTRACK (docs, one line; nothing compiled or embedded into a binary) | `make check-ci-fast` only, no cargo |
+| LIGHT (the default) | ONE targeted `cargo test --profile agent -p <crate> <module filter>` run plus `make check-ci-fast`, then push; CI's full shards are the gate |
+| STRICT, or heft >= 7 | LIGHT plus the area's integration test binaries (`cargo test --profile agent -p <crate> --test <name>`) |
+
+A change that adds or changes a CLI command or flag, in any tier, regenerates
+the help golden with `AIDA_UPDATE_SNAPSHOTS=1 cargo test --profile agent -p aida-cli-lib help_surface_matches_golden_snapshot`
+and commits `aida-cli-lib/src/tests/golden/cli_help_snapshot.txt`; `make check-ci-fast` fails
+when an `*_args.rs` or `command_registry.rs` edit ships without it.
+
+`make check-ci-fast` runs before every push. `make test-touched` and
+`make check-ci-compile` are conditional: run them only when the change touches
+shared test infra (`test_env`, `test_git`, ratchet baselines) or more than 10
+files. Reviewers run no cargo by default: they gate on green CI at the exact
+head and run one targeted test only to reproduce a specific suspected defect.
+`make test-touched` exits nonzero (script exit 3) when a suspect filter (the file
+holds `#[test]`/`mod tests`) matches 0 tests; a module (including a `#[path]` one)
+with no unit tests of its own falls back to its package's unfiltered unit tests (in `aida-cli-lib` the filter is dropped instead).
+It also exits nonzero (script exit 4) when workspace-root build config
+(`Cargo.toml`, `Cargo.lock`, `.cargo/`, `rust-toolchain*`) changed, and (exit 5)
+when a change would run the whole `aida-cli-lib` unit suite with no module to
+narrow to; name modules with `ARGS="--filter <module>"`. make reports
+these as `make: *** [Makefile:...] Error 3`/`Error 4`/`Error 5` and itself exits 2; read the
+script's own message above it. Embedded inputs such as `aida-core/templates/**` run
+the embedding package's unit tests plus the modules in other crates that use
+`EMBEDDED_TEMPLATES`. Whole-tree source-scanning guard tests are not
+reached by module filters; CI runs them. Where a project lacks these targets, use its equivalents.
+
+**Companion:** `aida init --with-memories` writes the same discipline as persistent *memory* files (one fact per file), so the habits surface in-session — not only when these docs are read.

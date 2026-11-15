@@ -1,0 +1,671 @@
+#!/bin/bash
+# AIDA Generated: v2.0.0 | checksum:94a92088
+# To customize: copy this file and modify the copy
+# AIDA Git Safety Guardrails — PreToolUse hook for Claude Code
+#
+# Blocks destructive git operations that could cause data loss:
+# - git reset --hard (discards uncommitted work)
+# - git clean -f (deletes untracked files)
+# - git checkout -- . (discards all changes)
+# - git push --force / -f / --force-with-lease to a protected branch
+#   (main/master/develop/aida-store); plain --force/-f to any branch
+# - git branch -d/-D/--delete of a PROTECTED branch (main/master/develop/
+#   aida-store/repo default); deleting a feature branch is allowed
+# - git stash drop (permanently drops stashed work)
+# - git rebase without confirmation context
+# - setting AIDA_CARGO_NO_SLOT (bypasses the cargo build-slot limiter)
+#
+# Install: add to .claude/settings.json hooks.PreToolUse
+# The hook reads the tool input from stdin as JSON.
+
+set -Eeuo pipefail
+
+# Unexpected hook failures must be visible to the agent runtime. Claude/Codex
+# treat a silent non-zero hook as a block with no useful reason, so only the
+# deliberate `exit 2` paths below should ever produce a non-zero status.
+# trace:BUG-1092 | ai:codex
+__aida_hook_unexpected_error() {
+    local status=$?
+    [ "$status" -eq 0 ] && return
+    printf 'AIDA hook internal error: aida-git-guardrails.sh aborted unexpectedly at line %s (exit %s). This is a hook bug, not a policy block.\n' "${BASH_LINENO[0]:-unknown}" "$status" >&2
+    exit "$status"
+}
+trap __aida_hook_unexpected_error ERR
+
+# Read the tool use from stdin
+INPUT=$(cat)
+
+# Deliberately duplicated in aida-advisor-code-guard.sh: scaffolded hooks are
+# self-contained, so keep this parser byte-identical in both templates.
+__aida_json_field() {
+    local field="$1"
+    awk -v wanted="$field" '
+    { text = text (NR > 1 ? "\n" : "") $0 }
+    END {
+        pattern = "\"" wanted "\"[ \t\r\n]*:[ \t\r\n]*\""
+        from = 1
+        while (from <= length(text) && match(substr(text, from), pattern)) {
+            start = from + RSTART - 1
+            before = start - 1
+            while (before > 0 && substr(text, before, 1) ~ /[ \t\r\n]/) before--
+            # Valid JSON escapes quotes of nested keys, so this branch is unreachable
+            # for well-formed input and is deliberately untested; retain malformed-input defense.
+            if (before == 0 || (substr(text, before, 1) != "{" && substr(text, before, 1) != ",")) {
+                from = start + RLENGTH
+                continue
+            }
+            i = start + RLENGTH
+            value = ""
+            while (i <= length(text)) {
+                c = substr(text, i, 1)
+                if (c == "\"") { printf "%s", value; exit }
+                if (c == "\\" && i < length(text)) {
+                    e = substr(text, i + 1, 1)
+                    if (e == "\"" || e == "\\" || e == "/") value = value e
+                    else if (e == "n") value = value "\n"
+                    else if (e == "r") value = value "\r"
+                    else if (e == "t") value = value "\t"
+                    else if (e == "u") value = value "\\u" # Leave \uXXXX escapes as-is.
+                    else value = value "\\" e
+                    i += 2
+                } else { value = value c; i++ }
+            }
+            exit
+        }
+    }'
+}
+
+# Extract the command from the Bash tool input
+COMMAND=$(printf '%s' "$INPUT" | __aida_json_field command)
+
+# If no command found (not a Bash tool call), allow
+if [ -z "$COMMAND" ]; then
+    exit 0
+fi
+
+# The repo's default branch (resolved dynamically — covers a repo whose default
+# is not "main"). Empty when it can't be resolved; the static set in
+# is_protected_branch still covers the common names so protection never depends
+# on this lookup succeeding.
+DEFAULT_BRANCH=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null || true)
+DEFAULT_BRANCH=${DEFAULT_BRANCH#origin/}
+
+# Is a branch name a PROTECTED branch whose force-push must be blocked?
+# Protected = main, master, develop, aida-store, AND the repo's actual default
+# branch. The match is on the EXACT branch name (callers pass a parsed target
+# ref), never a substring — so a feature like `story-610-main-fix` is NOT
+# protected. trace:BUG-661
+is_protected_branch() {
+    local b="${1#refs/heads/}"
+    case "$b" in
+        main|master|develop|aida-store) return 0 ;;
+    esac
+    if [ -n "$DEFAULT_BRANCH" ] && [ "$b" = "$DEFAULT_BRANCH" ]; then
+        return 0
+    fi
+    return 1
+}
+
+# Resolve the destination branch(es) of ONE `git push ...` segment.
+# Echoes one target branch per line, or the sentinel "__FAILCLOSED__" when the
+# target cannot be reliably determined (the caller treats that as protected, so
+# an unparseable push fails CLOSED / is blocked). Handles: explicit
+# `origin <branch>`, `origin HEAD:<branch>`, `origin <src>:<dst>`, a leading `+`
+# force marker on a refspec, a `-C <dir>` worktree override, and the
+# implicit/no-refspec case (resolves the real current branch of the TARGETED
+# working tree, not the CWD's HEAD blindly). trace:BUG-661
+resolve_one_push_segment() {
+    local seg="$1"
+    local -a toks=()
+    read -ra toks <<< "$seg"   # word-split without glob expansion
+    local n=${#toks[@]}
+    local i=1                  # toks[0] is "git"
+    local cdir=""
+    local subcmd_found=0
+    # Walk git's pre-subcommand global options until we reach `push`, capturing
+    # a `-C <dir>` so a bare push resolves HEAD in the right worktree.
+    while [ "$i" -lt "$n" ]; do
+        local t="${toks[$i]}"
+        case "$t" in
+            push) subcmd_found=1; i=$((i + 1)); break ;;
+            -C) cdir="${toks[$((i + 1))]:-}"; i=$((i + 2)) ;;
+            -c|--git-dir|--work-tree|--namespace) i=$((i + 2)) ;;
+            *) i=$((i + 1)) ;;
+        esac
+    done
+    if [ "$subcmd_found" = "0" ]; then
+        echo "__FAILCLOSED__"; return
+    fi
+    # Remaining tokens are the push arguments: first non-flag = the remote, the
+    # rest are refspecs.
+    local remote_seen=0
+    local found_refspec=0
+    local out=""
+    while [ "$i" -lt "$n" ]; do
+        local t="${toks[$i]}"
+        i=$((i + 1))
+        case "$t" in
+            -*) continue ;;   # flag (incl. --force-with-lease=<ref>); skip
+        esac
+        if [ "$remote_seen" = "0" ]; then
+            remote_seen=1; continue   # the remote name (e.g. origin)
+        fi
+        found_refspec=1
+        t="${t#+}"                    # drop a leading '+' force marker
+        local dst
+        if [ "${t#*:}" != "$t" ]; then
+            dst="${t##*:}"            # destination = part after the last ':'
+        else
+            dst="$t"
+        fi
+        dst="${dst#refs/heads/}"
+        out="${out}${dst}"$'\n'
+    done
+    if [ "$found_refspec" = "1" ]; then
+        printf '%s' "$out"
+        return
+    fi
+    # No refspec → push the current branch of the targeted tree.
+    # symbolic-ref --short returns the branch name, or empty + non-zero on a
+    # detached HEAD (or any unknown state) → fail closed.
+    local cur
+    if [ -n "$cdir" ]; then
+        cur=$(git -C "$cdir" symbolic-ref -q --short HEAD 2>/dev/null || true)
+    else
+        cur=$(git symbolic-ref -q --short HEAD 2>/dev/null || true)
+    fi
+    if [ -z "$cur" ]; then
+        echo "__FAILCLOSED__"; return   # detached / unknown → fail closed
+    fi
+    printf '%s\n' "$cur"
+}
+
+# Resolve the destination branch(es) across ALL push segments in a command.
+# Echoes every target (one per line); echoes "__FAILCLOSED__" if any segment is
+# unparseable or no push is found. A chained command
+# (`a && git push --force origin main`) is split on shell separators so a
+# force-push to a protected branch anywhere in the command is still caught.
+# trace:BUG-661
+resolve_push_targets() {
+    local cmd="$1"
+    local segs
+    segs=$(printf '%s' "$cmd" | grep -oE 'git[^&|;]*\bpush\b[^&|;]*' || true)
+    if [ -z "$segs" ]; then
+        echo "__FAILCLOSED__"; return
+    fi
+    local seg
+    while IFS= read -r seg; do
+        [ -z "$seg" ] && continue
+        resolve_one_push_segment "$seg"
+    done <<EOF
+$segs
+EOF
+}
+
+# Resolve the branch name(s) targeted by ONE `git branch ...` segment that is a
+# DELETION (`-d` / `-D` / `--delete`). Echoes one target branch per line; echoes
+# nothing when the segment is a branch subcommand that is NOT a delete (list,
+# create, rename, copy); echoes the sentinel "__FAILCLOSED__" when it IS a delete
+# but no branch name can be parsed (the caller treats that as protected, so an
+# ambiguous delete fails CLOSED / is blocked). Handles flags in any order and
+# combined, a `-C <dir>` worktree override (a pre-subcommand global option), and
+# multiple branch names. trace:BUG-662
+resolve_one_branch_segment() {
+    local seg="$1"
+    local -a toks=()
+    read -ra toks <<< "$seg"   # word-split without glob expansion
+    local n=${#toks[@]}
+    local i=1                  # toks[0] is "git"
+    local subcmd_found=0
+    # Walk git's pre-subcommand global options until we reach `branch`. A
+    # `-C <dir>` here is the global worktree override (distinct from branch's own
+    # `-C` copy flag, which can only appear AFTER the subcommand).
+    while [ "$i" -lt "$n" ]; do
+        local t="${toks[$i]}"
+        case "$t" in
+            branch) subcmd_found=1; i=$((i + 1)); break ;;
+            -C) i=$((i + 2)) ;;
+            -c|--git-dir|--work-tree|--namespace) i=$((i + 2)) ;;
+            *) i=$((i + 1)) ;;
+        esac
+    done
+    if [ "$subcmd_found" = "0" ]; then
+        return   # no branch subcommand in this segment → nothing
+    fi
+    # Branch arguments: a delete flag (`--delete`, or a short cluster containing
+    # `d`/`D`) marks the intent; every non-flag token is a branch-name target.
+    local delete_intent=0
+    local found_target=0
+    local out=""
+    while [ "$i" -lt "$n" ]; do
+        local t="${toks[$i]}"
+        i=$((i + 1))
+        case "$t" in
+            --delete) delete_intent=1 ;;
+            --*) : ;;                      # other long flag (e.g. --force); skip
+            -*)
+                case "$t" in
+                    *[dD]*) delete_intent=1 ;;   # short cluster with d/D = delete
+                esac
+                ;;
+            *)
+                found_target=1
+                out="${out}${t}"$'\n'
+                ;;
+        esac
+    done
+    if [ "$delete_intent" = "0" ]; then
+        return   # branch subcommand but not a delete → nothing
+    fi
+    if [ "$found_target" = "1" ]; then
+        printf '%s' "$out"
+    else
+        echo "__FAILCLOSED__"   # delete with no parseable target → fail closed
+    fi
+}
+
+# Resolve the delete target(s) across ALL `git branch` segments in a command.
+# Echoes every delete target (one per line); echoes nothing when the command has
+# no branch-delete; echoes "__FAILCLOSED__" when a delete is present but its
+# target is unparseable. A chained command (`a && git branch -D feat`) is split
+# on shell separators so a protected-branch delete anywhere is still caught.
+# trace:BUG-662
+resolve_branch_delete_targets() {
+    local cmd="$1"
+    local segs
+    segs=$(printf '%s' "$cmd" | grep -oE 'git[^&|;]*\bbranch\b[^&|;]*' || true)
+    if [ -z "$segs" ]; then
+        return   # no branch subcommand anywhere → nothing
+    fi
+    local seg
+    while IFS= read -r seg; do
+        [ -z "$seg" ] && continue
+        resolve_one_branch_segment "$seg"
+    done <<EOF
+$segs
+EOF
+}
+
+# Blank out shell LITERALS in a command, so a dangerous git token that appears
+# only as PROSE (inside a quoted argument, a heredoc body, or a comment) is NOT
+# matched as if it were a real git invocation (e.g. `aida add --description
+# '...the git reset --hard flag...'`, or `cat > notes.md <<EOF` whose body quotes
+# a force-push). trace:BUG-692 | ai:claude
+#
+# The scanner is a small POSIX awk state machine (no gawk extensions — the hook
+# must run under mawk/BSD awk too) that, ACROSS lines:
+#   - empties single-, double- and $'...'-quoted bodies (quotes kept, so word
+#     boundaries survive; backslash escapes honoured outside single quotes);
+#   - drops heredoc bodies from `<<WORD` / `<<-WORD` / `<<'WORD'` to the
+#     terminator line (`<<<` here-strings and `$((1<<2))` arithmetic are not
+#     heredocs);
+#   - drops `#` comments and joins backslash line-continuations, so a real
+#     command split over lines is scanned as one line.
+# A genuine destructive git command never wraps its subcommand/flags in quotes,
+# so every real block still fires; a quoted ref (`git push --force "main"`)
+# collapses to an unparseable target and fails CLOSED. An unterminated quote or
+# heredoc makes the scanner exit non-zero, and the caller fails CLOSED with a
+# stated reason. trace:BUG-1936 | ai:claude
+strip_shell_literals() {
+    printf '%s' "$1" | awk '
+    BEGIN { SQ = "\047"; DQ = "\042"; BS = "\\"; st = "N"; nq = 0; hi = 0; inhd = 0; ar = 0; bad = 0 }
+    {
+        line = $0
+        if (inhd) {
+            cmp = line
+            if (hstrip[hi]) sub(/^\t+/, "", cmp)
+            if (cmp == hdelim[hi]) {
+                hi++
+                if (hi > nq) { inhd = 0; nq = 0; hi = 0 }
+            }
+            next
+        }
+        out = ""; n = length(line); i = 1; cont = 0
+        while (i <= n) {
+            c = substr(line, i, 1)
+            if (st == "S") {
+                if (c == SQ) { st = "N"; out = out c }
+                i++; continue
+            }
+            if (st == "A" || st == "D") {
+                if (c == BS) { i += 2; continue }
+                if ((st == "A" && c == SQ) || (st == "D" && c == DQ)) { st = "N"; out = out c }
+                i++; continue
+            }
+            # Unquoted text.
+            if (c == BS) {
+                if (i == n) { cont = 1; out = out " "; i++; continue }
+                out = out substr(line, i, 2); i += 2; continue
+            }
+            if (c == SQ) {
+                st = (substr(out, length(out), 1) == "$") ? "A" : "S"
+                out = out c; i++; continue
+            }
+            if (c == DQ) { st = "D"; out = out c; i++; continue }
+            if (c == "#" && (i == 1 || substr(line, i - 1, 1) ~ /[ \t;&|(]/)) break
+            if (substr(line, i, 2) == "((") { ar++; out = out "(("; i += 2; continue }
+            if (ar > 0 && substr(line, i, 2) == "))") { ar--; out = out "))"; i += 2; continue }
+            if (substr(line, i, 3) == "<<<") { out = out "<<<"; i += 3; continue }
+            if (ar == 0 && substr(line, i, 2) == "<<") {
+                j = i + 2; strip = 0
+                if (substr(line, j, 1) == "-") { strip = 1; j++ }
+                while (j <= n && substr(line, j, 1) ~ /[ \t]/) j++
+                d = ""
+                while (j <= n) {
+                    ch = substr(line, j, 1)
+                    if (ch ~ /[ \t;&|<>()]/) break
+                    if (ch != SQ && ch != DQ && ch != BS) d = d ch
+                    j++
+                }
+                if (d == "") bad = 1
+                else { nq++; hdelim[nq] = d; hstrip[nq] = strip }
+                out = out substr(line, i, j - i); i = j; continue
+            }
+            out = out c; i++
+        }
+        if (st == "N" && !cont) {
+            printf "%s\n", out
+            if (nq > 0) { inhd = 1; hi = 1 }
+        } else {
+            printf "%s", out
+        }
+    }
+    END { if (st != "N" || inhd || bad) exit 3 }'
+}
+
+# Patterns that indicate destructive git operations
+# Each pattern has an explanation of why it's blocked
+check_destructive() {
+    local cmd="$1"
+
+    # git reset --hard — discards all uncommitted changes
+    if echo "$cmd" | grep -qE 'git\s+reset\s+--hard'; then
+        echo "BLOCKED: 'git reset --hard' discards all uncommitted changes."
+        echo "Alternative: 'git stash' to save changes, or 'git checkout -- <file>' for specific files."
+        return 1
+    fi
+
+    # git clean -f — permanently deletes untracked files
+    if echo "$cmd" | grep -qE 'git\s+clean\s+-[a-zA-Z]*f'; then
+        echo "BLOCKED: 'git clean -f' permanently deletes untracked files."
+        echo "Alternative: 'git clean -n' to preview what would be deleted."
+        return 1
+    fi
+
+    # git checkout -- . — discards all working tree changes. Match the literal
+    # pathspec "." only; dot-prefixed one-file paths like `.claude/x` are safe
+    # targeted restores and must be allowed. trace:BUG-1092 | ai:codex
+    if echo "$cmd" | grep -qE '(^|[;&|])[[:space:]]*git[^&|;]*[[:space:]]checkout[[:space:]][^&|;]*--[[:space:]]+\.[[:space:]]*($|[;&|])'; then
+        echo "BLOCKED: 'git checkout -- .' discards all working tree changes."
+        echo "Alternative: 'git checkout -- <specific-file>' for targeted restore."
+        return 1
+    fi
+
+    # Force-push handling (BUG-548, BUG-661).
+    # A force-push of ANY form — --force, -f, AND --force-with-lease — to a
+    # PROTECTED branch is blocked outright. --force-with-lease is NOT safe here:
+    # the lease only checks the ref you last fetched, so once you (or a sibling
+    # worktree) have fetched a newer main, the lease passes and the push can
+    # still clobber commits merged after that fetch (e.g. a merged PR). This is
+    # exactly the 2026-06-13 incident: `git push --force-with-lease origin main`
+    # off a failed `cd` dropped a merged PR from main. --force-with-lease to a
+    # feature branch stays allowed — that's the legitimate post-rebase path.
+    # BUG-552: match the short `-f` ANYWHERE in the push command, not just
+    # immediately after `push` — `git push origin main -f` (trailing flag) must
+    # be caught too. The `\s` before the dash keeps a branch name containing a
+    # hyphen (`feat-f`) from tripping it (a flag is always space-separated).
+    # The `[^&|;]*` between `git` and `push` tolerates global options
+    # (`git -C <dir> push ...`) without spanning a shell separator into a
+    # neighbouring command. A leading `+` on a refspec (`git push origin +main`)
+    # is also a force-push and is caught so it can't sneak past as a protected
+    # target.
+    local is_force_push=0
+    if echo "$cmd" | grep -qE 'git[^&|;]*\bpush\b[^&|;]*--force'; then
+        is_force_push=1
+    elif echo "$cmd" | grep -qE 'git[^&|;]*\bpush\b[^&|;]*\s-[a-zA-Z]*f\b'; then
+        is_force_push=1
+    elif echo "$cmd" | grep -qE 'git[^&|;]*\bpush\b[^&|;]*\s\+[A-Za-z0-9_./-]'; then
+        is_force_push=1
+    fi
+    if [ "$is_force_push" = "1" ]; then
+        # BUG-661: decide protected-ness from the ACTUAL PUSH TARGET, not the
+        # CWD's current branch. An agent sitting on `main` in the primary
+        # checkout that force-pushes a FEATURE branch living in a worktree used
+        # to trip the old "is the CWD HEAD protected?" heuristic. We now parse
+        # the destination ref(s) from the push invocation and block only when a
+        # TARGET is a protected branch; an unparseable target fails CLOSED.
+        local targets
+        targets=$(resolve_push_targets "$cmd")
+        local target_protected=0
+        if printf '%s\n' "$targets" | grep -q '__FAILCLOSED__'; then
+            target_protected=1   # could not parse the target → fail closed
+        else
+            local _t
+            while IFS= read -r _t; do
+                [ -z "$_t" ] && continue
+                if is_protected_branch "$_t"; then
+                    target_protected=1
+                fi
+            done <<EOF
+$targets
+EOF
+        fi
+        if [ "$target_protected" = "1" ]; then
+            echo "BLOCKED: force-push to a protected branch (main/master/develop/aida-store or the repo default)."
+            echo "This includes --force-with-lease — the lease only checks the ref you last"
+            echo "fetched, so it can still clobber commits merged after that fetch (a merged PR)."
+            echo "Protected branches advance only via normal push / merge — never a force-push."
+            return 1
+        fi
+        # Not a protected target: a plain --force/-f (no lease) can still
+        # overwrite a feature branch's history — keep nudging toward the lease.
+        if ! echo "$cmd" | grep -qF -- '--force-with-lease'; then
+            echo "BLOCKED: 'git push --force' can overwrite remote history."
+            echo "Alternative: 'git push --force-with-lease' is safer (checks remote hasn't changed)."
+            return 1
+        fi
+    fi
+
+    # Branch-deletion handling (BUG-662). Mirror the force-push TARGET logic:
+    # block only when a DELETE target is a PROTECTED branch (main / repo default /
+    # aida-store / master / develop) — deleting a feature branch is allowed, since
+    # every agent worktree leaves a stale local branch behind. The old guard
+    # blanket-blocked every `git branch -D`, refusing that legitimate cleanup. An
+    # unparseable delete fails CLOSED. Reuses is_protected_branch.
+    local del_targets
+    del_targets=$(resolve_branch_delete_targets "$cmd")
+    if [ -n "$del_targets" ]; then
+        local del_protected=0
+        if printf '%s\n' "$del_targets" | grep -q '__FAILCLOSED__'; then
+            del_protected=1   # delete present but target unparseable → fail closed
+        else
+            local _b
+            while IFS= read -r _b; do
+                [ -z "$_b" ] && continue
+                if is_protected_branch "$_b"; then
+                    del_protected=1
+                fi
+            done <<EOF
+$del_targets
+EOF
+        fi
+        if [ "$del_protected" = "1" ]; then
+            echo "BLOCKED: deleting a protected branch (main/master/develop/aida-store or the repo default)."
+            echo "Protected branches are never deleted locally — only merged feature branches are."
+            return 1
+        fi
+    fi
+
+    # git stash drop/clear — permanently removes stashed changes
+    if echo "$cmd" | grep -qE 'git\s+stash\s+(drop|clear)\b'; then
+        echo "BLOCKED: 'git stash drop/clear' permanently removes stashed changes."
+        echo "Alternative: 'git stash list' to review, 'git stash pop' to apply and remove."
+        return 1
+    fi
+
+    # rm -rf on git directory
+    if echo "$cmd" | grep -qE 'rm\s+-[a-zA-Z]*r[a-zA-Z]*f?\s+\.git\b'; then
+        echo "BLOCKED: Removing .git directory destroys the entire repository history."
+        return 1
+    fi
+
+    return 0
+}
+
+# Scan a copy with shell literals neutralized so prose inside a quoted value,
+# heredoc body, or comment can't trip the destructive-pattern checks (BUG-692,
+# BUG-1936). Every block reason goes to STDERR: the agent runtime only shows a
+# blocking hook's stderr, so a stdout-only reason surfaced as "No stderr
+# output". trace:BUG-1936 | ai:claude
+if ! SCAN_COMMAND=$(strip_shell_literals "$COMMAND"); then
+    # Fail closed on unparseable input ONLY when the raw command could be a
+    # git command (word-boundary `git`, which also covers `rm -rf .git`). A
+    # non-git command must never be blocked because the tokenizer could not
+    # parse it. trace:BUG-1936 | ai:claude
+    if ! printf '%s' "$COMMAND" | grep -qE '\bgit\b'; then
+        exit 0
+    fi
+    {
+        echo "BLOCKED: could not parse this command's quoting (an unterminated quote or heredoc)."
+        echo "The git safety check cannot tell which parts are real git commands, so it fails closed."
+        echo "Close the quote or heredoc, or write long text to a file and pass it by path."
+    } >&2
+    exit 2
+fi
+
+if ! check_destructive "$SCAN_COMMAND" >&2; then
+    {
+        echo ""
+        echo "To proceed anyway, ask the user to confirm the destructive operation."
+    } >&2
+    exit 2
+fi
+
+# An agent may not bypass the host cargo-slot limiter. Setting
+# AIDA_CARGO_NO_SLOT skips the slot queue, so one agent's full suite runs beside
+# two slotted builds on a 6-core host (fix-2725: `make check` took 1h20m).
+# Any assignment (`=`, `+=`, `export`, `env`, and with no `=`: `printf -v`,
+# `read`, a bare `export`) is blocked where it can run (a bare setter's
+# name may be quoted):
+# - the command with quoted text and heredoc bodies removed (SCAN_COMMAND);
+# - anywhere, when the command runs an unquoted shell or eval (`bash -c
+#   "..."`, `sh -c '...'`, `eval "..."`, `bash <<EOF`, `| sh`, `fish -c`),
+#   runs `env -S` / `--split-string` or `xargs`, or sources or runs a file
+#   (`source`, `.`, `./x`, also after `time` or an exec prefix like `nohup`);
+# - inside a command or process substitution (`$(...)`, backticks, `<(...)`);
+# - a quoted assignment word, or a quoted name before `=`, after
+#   env/export/declare/typeset/local/readonly/make/gmake.
+# Quoted text nothing executes is prose, not an assignment (TASK-1643): an
+# `rg`/`grep` pattern, a `git commit -m` message, an `aida comment add` or
+# mailbox body. Unsetting it (`env -u`, `unset`) has no `=` and stays allowed.
+# An indirect name (`X=AIDA_CARGO_NO_SLOT; export "${X}=1"`) is out of scope:
+# that is deliberate evasion, not an accident.
+# This guard is defense-in-depth for an advisory hook, not a sandbox: a line
+# scanner cannot parse every shell form, and its exec-prefix and setter lists
+# are not exhaustive. Scope: a further bypass shape is tracked as a follow-up
+# spec rather than widened here.
+# trace:TASK-1952 | trace:TASK-2246 | ai:claude
+# trace:TASK-1948 | ai:claude
+# trace:TASK-1952 | trace:TASK-1643 | ai:claude
+NO_SLOT_SET='AIDA_CARGO_NO_SLOT\+?='
+# A shell by name or by path (`bash`, `/bin/bash`, `/usr/bin/env bash`).
+# TASK-2139: fish too; a name continued by `-` or `.` (`scripts/sh-helper`,
+# `sh.txt`) is not a shell.
+# trace:TASK-1952 | trace:TASK-2139 | ai:claude
+NO_SLOT_SHELL='(^|[^A-Za-z0-9_.-])([^[:space:]'"'"'"]*/)?(bash|sh|zsh|dash|ksh|fish)'
+NO_SLOT_SHELL_END='([^A-Za-z0-9_.-]|$)'
+NO_SLOT_WORD_END='([^A-Za-z0-9_]|$)'
+# A command word at the start of a command: after a separator, the start, a
+# negation, or a keyword or builtin that runs the next word as a command
+# (`then . ./x`, `do source x`, `command . x`, `builtin source x`, `! . x`,
+# TASK-2246: `time . x`, `time -p . x`, and the exec prefixes `exec`,
+# `nohup`, `setsid`, `nice -n 5`, `timeout -s KILL 10`, `stdbuf -oL`,
+# `ionice -c3`, `taskset -c 0`, `env -i -u FOO X=1`: each takes option words
+# (an option may take one argument), numbers, and `NAME=value` assignments).
+# The prefix list is not exhaustive (see the defense-in-depth note above).
+# trace:TASK-1952 | trace:TASK-2139 | trace:TASK-2246 | ai:claude
+NO_SLOT_PREFIX_WORD='(-[^[:space:];&|]*([[:space:]]+[A-Za-z0-9_][^[:space:];&|=]*)?|[0-9][^[:space:];&|]*|[A-Za-z_][A-Za-z0-9_]*=[^[:space:];&|]*)'
+NO_SLOT_EXEC_PREFIX="(exec|nohup|setsid|nice|timeout|stdbuf|ionice|taskset|env)([[:space:]]+$NO_SLOT_PREFIX_WORD)*"
+NO_SLOT_CMD_START="(^|[;&|({!]|(^|[^A-Za-z0-9_])(then|do|else|command|builtin|time([[:space:]]+-p)?|$NO_SLOT_EXEC_PREFIX))[[:space:]]*"
+# TASK-2246: a builtin that sets or exports the name with no `=` in the word
+# (`printf -v NAME 1`, `read NAME`, `mapfile NAME`, a bare `export NAME` of a
+# value set some other way, `export -- NAME`, `export -p NAME`, which exports
+# NAME too: `export -p` prints only when given no names). The only reads
+# passed are `declare -p NAME` / `typeset -p NAME` without `-x` or `-g`, and
+# `printf` without `-v`.
+# trace:TASK-1952 | trace:TASK-2246 | ai:claude
+NO_SLOT_ANY_WORD='[^[:space:];&|]+'
+NO_SLOT_DECLARE_WORD='(-[A-Za-oq-z]*|-[A-Za-z]*[xg][A-Za-z]*|--|[^-[:space:];&|][^[:space:];&|]*)'
+NO_SLOT_BARE_BODY="((export|readonly|local|read|readarray|mapfile)([[:space:]]+$NO_SLOT_ANY_WORD)*|(declare|typeset)([[:space:]]+$NO_SLOT_DECLARE_WORD)*|printf([[:space:]]+$NO_SLOT_ANY_WORD)*[[:space:]]+-v)[[:space:]]+AIDA_CARGO_NO_SLOT$NO_SLOT_WORD_END"
+NO_SLOT_BARE="${NO_SLOT_CMD_START}$NO_SLOT_BARE_BODY"
+no_slot_set() {
+    printf '%s' "$SCAN_COMMAND" | grep -qE "(^|[^A-Za-z0-9_])$NO_SLOT_SET" && return 0
+    printf '%s' "$SCAN_COMMAND" | grep -qE "$NO_SLOT_BARE" && return 0
+    # An unquoted shell or eval runs quoted text (`-c` payloads, `eval`
+    # strings, heredocs or pipes fed to it), separators inside it included,
+    # so the whole command is scanned. A shell named only inside quoted prose
+    # runs nothing (TASK-2123). TASK-2139: so do `env -S` / `--split-string`
+    # (env runs its string), `source` / `.` and a `./script` run (a file this
+    # command may just have written). TASK-2246: so does `xargs` (it feeds a
+    # file's words to a command, `xargs -a x.sh env`).
+    # trace:TASK-1952 | trace:TASK-2246 | ai:claude
+    if printf '%s' "$SCAN_COMMAND" | grep -qE \
+        "$NO_SLOT_SHELL$NO_SLOT_SHELL_END|(^|[^A-Za-z0-9_])(eval|xargs)$NO_SLOT_WORD_END|(^|[^A-Za-z0-9_])env([[:space:]]+[^[:space:];&|]+)*[[:space:]]+(-[A-Za-z]*S|--split-string)|$NO_SLOT_CMD_START(source|\\.)[[:space:]]|$NO_SLOT_CMD_START\\./[^[:space:]]"; then
+        printf '%s' "$COMMAND" | grep -qE "(^|[^A-Za-z0-9_])$NO_SLOT_SET" && return 0
+        # PR-2837 review round 5: a bare setter inside the payload too
+        # (`bash -c 'export NAME; make'`, `eval 'export NAME'`); a quote may
+        # open the payload's first command.
+        # trace:TASK-1952 | trace:TASK-2246 | ai:claude
+        printf '%s' "$COMMAND" | grep -qE "(^|[^A-Za-z0-9_./-])$NO_SLOT_BARE_BODY" && return 0
+    fi
+    # Command and process substitutions run even inside double quotes.
+    printf '%s' "$COMMAND" | grep -qE "(\\\$\\(|<\\(|>\\(|\`)[^)\`]*$NO_SLOT_SET" && return 0
+    # A quoted argument to an unquoted env/export/declare/typeset/local/
+    # readonly is still an assignment word (`env "X=1"`, `export 'X=1'`), and
+    # make/gmake export a quoted `X=1` argument to recipes (TASK-2139). Quote
+    # removal joins a word's adjacent quoted and unquoted segments into one
+    # assignment word (`export "X"=1`, `export X""=1`, `export X_"Y"=1`,
+    # `export "X"_Y=1`), so the command is matched with those segments joined
+    # first: a quote between two word characters, or opening a word, is
+    # dropped (TASK-2140).
+    # trace:TASK-1952 | trace:TASK-2140 | ai:claude
+    # PR-2837 review round 4: a bare setter's name is joined the same way
+    # (`export "NAME"`, `printf -v 'NAME'`), gated on an unquoted setter at a
+    # command start so quoted prose naming one (a commit message) passes. The
+    # unjoined SCAN_COMMAND match above still catches a setter whose earlier
+    # word quotes a `;` or `|` (`export FOO="x;y" NAME`).
+    # trace:TASK-1952 | trace:TASK-2246 | ai:claude
+    NO_SLOT_ASSIGNER='(env|export|declare|typeset|local|readonly|make|gmake)'
+    NO_SLOT_SETTER='(export|declare|typeset|local|readonly|read|readarray|mapfile|printf)'
+    NO_SLOT_HAS_ASSIGNER=0 NO_SLOT_HAS_SETTER=0
+    printf '%s' "$SCAN_COMMAND" | grep -qE "(^|[^A-Za-z0-9_])$NO_SLOT_ASSIGNER$NO_SLOT_WORD_END" \
+        && NO_SLOT_HAS_ASSIGNER=1
+    printf '%s' "$SCAN_COMMAND" | grep -qE "$NO_SLOT_CMD_START$NO_SLOT_SETTER$NO_SLOT_WORD_END" \
+        && NO_SLOT_HAS_SETTER=1
+    if [ "$NO_SLOT_HAS_ASSIGNER" = 1 ] || [ "$NO_SLOT_HAS_SETTER" = 1 ]; then
+        NO_SLOT_JOINED=$(printf '%s' "$COMMAND" | sed -E \
+            -e ':a' \
+            -e 's/([A-Za-z0-9_+=])["'"'"']+([A-Za-z0-9_+=])/\1\2/' \
+            -e 'ta' \
+            -e 's/(^|[[:space:]])["'"'"']+([A-Za-z_])/\1\2/g')
+        [ "$NO_SLOT_HAS_ASSIGNER" = 1 ] && printf '%s' "$NO_SLOT_JOINED" | grep -qE \
+            "(^|[^A-Za-z0-9_])$NO_SLOT_ASSIGNER([[:space:]]+[^[:space:];&|]+)*[[:space:]]+$NO_SLOT_SET" \
+            && return 0
+        [ "$NO_SLOT_HAS_SETTER" = 1 ] && printf '%s' "$NO_SLOT_JOINED" | grep -qE "$NO_SLOT_BARE" \
+            && return 0
+    fi
+    return 1
+}
+if no_slot_set; then
+    {
+        echo "BLOCKED: AIDA_CARGO_NO_SLOT bypasses the cargo build-slot limiter."
+        echo "Agents queue for a slot like everyone else: drop the variable and run long cargo"
+        echo "commands in the background. A full suite is CI's job, not a pre-push step"
+        # trace:TASK-2238 | ai:claude — the LIGHT gate (TASK-2209)
+        echo "(one targeted cargo test --profile agent run + make check-ci-fast)."
+        echo "Only the operator may bypass the queue."
+    } >&2
+    exit 2
+fi
+
+exit 0
